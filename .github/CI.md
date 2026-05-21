@@ -104,5 +104,5 @@ Manual (from local)
 
 ---
 Last updated: 2025-09
-Maintainer: SpyicyDev
+Maintainer: mackhaymond
 Status: ✅ Production Ready

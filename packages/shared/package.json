@@ -10,7 +10,7 @@
     "dev": "tsc --watch"
   },
   "keywords": ["types", "api", "contracts"],
-  "author": "SpyicyDev",
+  "author": "mackhaymond",
   "license": "MIT",
   "devDependencies": {
     "typescript": "^5.3.3"

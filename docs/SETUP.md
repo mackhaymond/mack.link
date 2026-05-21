@@ -197,7 +197,7 @@ If you're still having issues:
 1. **Check the logs**: `npx wrangler tail` to see real-time errors
 2. **Verify configuration**: Double-check all URLs and secrets
 3. **Test locally**: Use `npm run dev` to test before deploying
-4. **Community support**: [Open an issue](https://github.com/SpyicyDev/mack.link/issues) with detailed error messages
+4. **Community support**: [Open an issue](https://github.com/mackhaymond/mack.link/issues) with detailed error messages
 
 ## 📊 Monitoring Your Instance
 
@@ -219,7 +219,7 @@ Your admin panel includes:
 ### Keeping Your Instance Updated
 ```bash
 # Sync with upstream changes
-git remote add upstream https://github.com/SpyicyDev/mack.link.git
+git remote add upstream https://github.com/mackhaymond/mack.link.git
 git fetch upstream
 git merge upstream/main
 
@@ -247,4 +247,4 @@ Now that your URL shortener is running:
 
 ---
 
-*Need more help? Check the [Development Guide](./DEVELOPMENT.md) for local development setup or [open an issue](https://github.com/SpyicyDev/mack.link/issues) for support.*
+*Need more help? Check the [Development Guide](./DEVELOPMENT.md) for local development setup or [open an issue](https://github.com/mackhaymond/mack.link/issues) for support.*

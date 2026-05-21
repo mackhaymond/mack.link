@@ -15,7 +15,7 @@ The easiest way to contribute is by using Mack.link for your own projects:
 ### 🐛 Report Issues
 Found a bug or have a suggestion? We'd love to hear about it:
 
-- **Check [existing issues](https://github.com/SpyicyDev/mack.link/issues)** first
+- **Check [existing issues](https://github.com/mackhaymond/mack.link/issues)** first
 - **Create a detailed report** with steps to reproduce
 - **Include screenshots** or error messages when helpful
 

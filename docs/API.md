@@ -52,7 +52,7 @@ Redirects visitors to the destination URL and tracks analytics.
 ```bash
 curl -I https://link.mackhaymond.co/demo
 # HTTP/1.1 301 Moved Permanently
-# Location: https://github.com/SpyicyDev/mack.link
+# Location: https://github.com/mackhaymond/mack.link
 ```
 
 ### Password Protected Links

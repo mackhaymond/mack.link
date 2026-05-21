@@ -76,7 +76,7 @@ Mack.link runs as a single Cloudflare Worker that handles everything - no comple
 
 - 🔗 **Short URLs**: [link.mackhaymond.co](https://link.mackhaymond.co)
 - 🎛️ **Admin Panel**: [link.mackhaymond.co/admin](https://link.mackhaymond.co/admin)
-- 📁 **Source Code**: [GitHub Repository](https://github.com/SpyicyDev/mack.link)
+- 📁 **Source Code**: [GitHub Repository](https://github.com/mackhaymond/mack.link)
 
 **Example short link**: [link.mackhaymond.co/demo](https://link.mackhaymond.co/demo) → redirects to this repository
 
@@ -231,13 +231,13 @@ npm run deploy
 
 **Troubleshooting:**
 - Common issues and solutions in each guide
-- Check the [GitHub Issues](https://github.com/SpyicyDev/mack.link/issues) for community support
+- Check the [GitHub Issues](https://github.com/mackhaymond/mack.link/issues) for community support
 
 ## 🤝 Contributing
 
 We welcome contributions! Here's how you can help:
 
-- 🐛 **Report Bugs**: [Open an issue](https://github.com/SpyicyDev/mack.link/issues/new) with detailed reproduction steps
+- 🐛 **Report Bugs**: [Open an issue](https://github.com/mackhaymond/mack.link/issues/new) with detailed reproduction steps
 - 💡 **Request Features**: Describe your use case and proposed solution
 - 📖 **Improve Docs**: Fix typos, add examples, or clarify instructions
 - 🔧 **Submit Code**: Fork, create a feature branch, and submit a pull request
@@ -256,7 +256,7 @@ If Mack.link helps you or your organization, consider:
 
 - ⭐ **Star this repository** to show your support
 - 🐦 **Share it** with others who might find it useful
-- 🍕 **[Buy me a coffee](https://github.com/sponsors/SpyicyDev)** to fuel development
+- 🍕 **[Buy me a coffee](https://github.com/sponsors/mackhaymond)** to fuel development
 
 ## 📄 License
 
@@ -268,10 +268,10 @@ MIT License - see [LICENSE](./LICENSE) for details.
 
 <div align="center">
 
-**🔗 Built with ❤️ by [SpyicyDev](https://github.com/SpyicyDev)**
+**🔗 Built with ❤️ by [mackhaymond](https://github.com/mackhaymond)**
 
 *Powered by Cloudflare Workers & React*
 
-[⭐ Star on GitHub](https://github.com/SpyicyDev/mack.link) • [🚀 Try the Demo](https://link.mackhaymond.co/admin) • [📖 Read the Docs](./docs/SETUP.md)
+[⭐ Star on GitHub](https://github.com/mackhaymond/mack.link) • [🚀 Try the Demo](https://link.mackhaymond.co/admin) • [📖 Read the Docs](./docs/SETUP.md)
 
 </div>

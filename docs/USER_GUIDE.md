@@ -32,7 +32,7 @@ After signing in for the first time:
 5. **Click "Create Link"**
 
 ### Example
-- **Long URL**: `https://github.com/SpyicyDev/mack.link`
+- **Long URL**: `https://github.com/mackhaymond/mack.link`
 - **Custom Shortcode**: `github`
 - **Description**: `My GitHub Repository`
 - **Result**: `https://yourdomain.com/github`

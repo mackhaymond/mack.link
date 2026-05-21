@@ -74,11 +74,11 @@
     "react",
     "d1-database"
   ],
-  "author": "SpyicyDev",
+  "author": "mackhaymond",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/SpyicyDev/mack.link.git"
+    "url": "https://github.com/mackhaymond/mack.link.git"
   },
   "homepage": "https://link.mackhaymond.co"
 }

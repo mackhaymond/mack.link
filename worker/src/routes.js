@@ -79,7 +79,7 @@ function renderHomeHtml() {
 </head>
 <body>
   <div class="topbar">
-    <a class="icon-btn" href="https://github.com/SpyicyDev/mack.link" target="_blank" rel="noopener noreferrer" aria-label="View source on GitHub">
+    <a class="icon-btn" href="https://github.com/mackhaymond/mack.link" target="_blank" rel="noopener noreferrer" aria-label="View source on GitHub">
       <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
         <path d="M12 .5a11.5 11.5 0 0 0-3.64 22.41c.58.11.8-.25.8-.57v-2.1c-3.26.71-3.95-1.57-3.95-1.57-.53-1.35-1.3-1.71-1.3-1.71-1.06-.73.08-.72.08-.72 1.17.08 1.78 1.2 1.78 1.2 1.04 1.78 2.72 1.27 3.39.97.11-.77.41-1.27.74-1.56-2.6-.3-5.35-1.3-5.35-5.78 0-1.28.46-2.33 1.2-3.16-.12-.3-.52-1.52.11-3.17 0 0 .98-.31 3.2 1.2a11.1 11.1 0 0 1 5.82 0c2.22-1.51 3.2-1.2 3.2-1.2.63 1.65.23 2.87.11 3.17.75.83 1.2 1.88 1.2 3.16 0 4.49-2.75 5.47-5.37 5.76.42.37.8 1.1.8 2.22v3.29c0 .32.2.69.8.57A11.5 11.5 0 0 0 12 .5Z"/>
       </svg>

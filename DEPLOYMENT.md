@@ -94,7 +94,7 @@ npm run build:worker      # Embed assets and prepare worker
 
 # Existing variables remain the same
 GITHUB_CLIENT_ID="Ov23liS0CpATewxLcycF"
-AUTHORIZED_USER="SpyicyDev"
+AUTHORIZED_USER="mackhaymond"
 SESSION_MAX_AGE="28800"
 SESSION_COOKIE_NAME="__Host-link_session"
 ```

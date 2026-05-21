@@ -17,7 +17,7 @@ Before you start, make sure you have:
 ### 1. Get the Code
 ```bash
 # Clone the repository
-git clone https://github.com/SpyicyDev/mack.link.git
+git clone https://github.com/mackhaymond/mack.link.git
 cd mack.link
 
 # Install all dependencies (uses npm workspaces)
