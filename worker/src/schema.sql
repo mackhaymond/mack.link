@@ -70,6 +70,7 @@ CREATE TABLE IF NOT EXISTS analytics_day (
   scope TEXT NOT NULL,
   day TEXT NOT NULL,
   clicks INTEGER DEFAULT 0,
+  unique_clicks INTEGER DEFAULT 0,
   PRIMARY KEY (scope, day)
 );
 
@@ -89,7 +90,17 @@ CREATE TABLE IF NOT EXISTS analytics_day_agg (
   dimension TEXT NOT NULL,
   key TEXT NOT NULL,
   clicks INTEGER DEFAULT 0,
+  unique_clicks INTEGER DEFAULT 0,
   PRIMARY KEY (scope, day, dimension, key)
+);
+
+-- M1: one-way per-day visitor fingerprints (SHA-256 of IP+UA+day). Used to
+-- bump unique_clicks on the analytics tables without storing PII.
+CREATE TABLE IF NOT EXISTS visitor_fingerprints (
+  scope TEXT NOT NULL,
+  day TEXT NOT NULL,
+  fingerprint TEXT NOT NULL,
+  PRIMARY KEY (scope, day, fingerprint)
 );
 
 -- Global counters (expires_at supports ephemeral entries for rate limiting and password sessions)

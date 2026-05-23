@@ -126,9 +126,21 @@ function maybeAddOwnerIdToLinks() {
 	}
 }
 
+function maybeAddUniqueClicks() {
+	for (const table of ['analytics_day', 'analytics_day_agg']) {
+		if (!columnExists(table, 'unique_clicks')) {
+			console.log(`  + ALTER ${table} ADD COLUMN unique_clicks INTEGER DEFAULT 0`);
+			execSql(`ALTER TABLE ${table} ADD COLUMN unique_clicks INTEGER DEFAULT 0;`);
+		} else {
+			console.log(`  · ${table}.unique_clicks already present`);
+		}
+	}
+}
+
 const PROGRAMMATIC_STEPS = {
 	'002_counters_expiry.sql': maybeAddExpiresAtToCounters,
 	'003_owner_id.sql': maybeAddOwnerIdToLinks,
+	'005_unique_visitors.sql': maybeAddUniqueClicks,
 };
 
 function main() {

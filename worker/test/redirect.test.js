@@ -14,6 +14,7 @@ async function ensureSchema() {
 	)`);
 	await dbRun(env, `CREATE TABLE IF NOT EXISTS analytics_day (
 		scope TEXT NOT NULL, day TEXT NOT NULL, clicks INTEGER DEFAULT 0,
+		unique_clicks INTEGER DEFAULT 0,
 		PRIMARY KEY (scope, day)
 	)`);
 	await dbRun(env, `CREATE TABLE IF NOT EXISTS analytics_agg (
@@ -23,10 +24,15 @@ async function ensureSchema() {
 	await dbRun(env, `CREATE TABLE IF NOT EXISTS analytics_day_agg (
 		scope TEXT NOT NULL, day TEXT NOT NULL, dimension TEXT NOT NULL,
 		key TEXT NOT NULL, clicks INTEGER DEFAULT 0,
+		unique_clicks INTEGER DEFAULT 0,
 		PRIMARY KEY (scope, day, dimension, key)
 	)`);
 	await dbRun(env, `CREATE TABLE IF NOT EXISTS counters (
 		name TEXT PRIMARY KEY, value INTEGER DEFAULT 0, expires_at TEXT
+	)`);
+	await dbRun(env, `CREATE TABLE IF NOT EXISTS visitor_fingerprints (
+		scope TEXT NOT NULL, day TEXT NOT NULL, fingerprint TEXT NOT NULL,
+		PRIMARY KEY (scope, day, fingerprint)
 	)`);
 }
 
@@ -51,6 +57,7 @@ describe('Redirect handler (C8, C9, M17)', () => {
 		await dbRun(env, `DELETE FROM analytics_agg`);
 		await dbRun(env, `DELETE FROM analytics_day_agg`);
 		await dbRun(env, `DELETE FROM counters`);
+		await dbRun(env, `DELETE FROM visitor_fingerprints`);
 	});
 
 	it('atomic click increment under concurrent requests (C8)', async () => {

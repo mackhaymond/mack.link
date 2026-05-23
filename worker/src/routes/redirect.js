@@ -1,7 +1,8 @@
 import { logger } from '../logger.js';
 import { withCors } from '../cors.js';
-import { getAnalyticsStatements } from '../analytics.js';
+import { getAnalyticsStatements, computeVisitorFingerprint, markVisitorIfNew } from '../analytics.js';
 import { dbGet } from '../db.js';
+import { getClientIP } from '../utils.js';
 import { verifyPasswordSession, renderPasswordPrompt, readPasswordSessionCookie } from './password.js';
 
 export async function handleRedirect(request, env, requestLogger = logger, ctx) {
@@ -78,16 +79,30 @@ export async function handleRedirect(request, env, requestLogger = logger, ctx) 
 	const isHead = method === 'HEAD';
 	const isPrefetch = detectPrefetch(request);
 	if (!isBot && !isHead && !isPrefetch) {
-		// Record click and analytics transactionally to prevent data inconsistency
 		try {
 			const now = new Date().toISOString();
 			const updateLinkStatement = {
 				sql: `UPDATE links SET clicks = COALESCE(clicks,0) + 1, last_clicked = ? WHERE shortcode = ?`,
 				bindings: [now, shortcode]
 			};
-			
-			// Get analytics statements and combine with link update
-			const analyticsStatements = await getAnalyticsStatements(env, request, shortcode, link.url, requestLogger);
+
+			// M1: unique visitor detection. Compute fingerprint per-day and try to
+			// claim it for both the shortcode and global '_all' scopes. Whichever
+			// scopes were freshly claimed get unique_clicks bumped in the same batch.
+			let uniqueScopes = [];
+			try {
+				const ip = getClientIP(request);
+				const day = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+				const fp = await computeVisitorFingerprint(ip, ua, day);
+				const newForScope = await markVisitorIfNew(env, shortcode, day, fp);
+				const newForAll = await markVisitorIfNew(env, '_all', day, fp);
+				if (newForScope) uniqueScopes.push(shortcode);
+				if (newForAll) uniqueScopes.push('_all');
+			} catch (fpErr) {
+				requestLogger.warn('Visitor fingerprint failed (proceeding without unique counting)', { error: fpErr.message });
+			}
+
+			const analyticsStatements = await getAnalyticsStatements(env, request, shortcode, link.url, requestLogger, { uniqueScopes });
 			const allStatements = [updateLinkStatement, ...analyticsStatements];
 			
 			// Execute all statements in a single transaction

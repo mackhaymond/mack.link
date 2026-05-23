@@ -31,5 +31,8 @@
 	},
 	"optionalDependencies": {
 		"@rollup/rollup-linux-x64-gnu": "4.50.0"
+	},
+	"dependencies": {
+		"ua-parser-js": "^2.0.10"
 	}
 }
