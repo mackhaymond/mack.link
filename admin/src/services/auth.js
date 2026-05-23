@@ -155,7 +155,18 @@ class AuthService {
     this.token = null
     this.user = null
     localStorage.removeItem('user')
-    fetch('/api/auth/logout', { method: 'POST', credentials: 'include' }).catch(() => {})
+    const base = API_BASE || window.location.origin
+    // Always clear local state and notify listeners synchronously, then
+    // attempt the server logout. If the server call fails, log it and emit
+    // a separate 'auth:logout-failed' event so callers can surface a toast.
+    fetch(new URL('/api/auth/logout', base).toString(), {
+      method: 'POST',
+      credentials: 'include',
+      headers: import.meta?.env?.VITE_AUTH_DISABLED === 'true' ? { 'x-dev-auth': '1' } : {},
+    }).catch((err) => {
+      console.error('Logout request failed', err)
+      window.dispatchEvent(new CustomEvent('auth:logout-failed', { detail: { error: err?.message } }))
+    })
     const event = new CustomEvent('auth:change', { detail: { token: null, user: null } })
     window.dispatchEvent(event)
   }

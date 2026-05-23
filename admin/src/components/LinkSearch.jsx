@@ -110,9 +110,6 @@ export function LinkSearch({ links, onFilteredResults, searchInputRef }) {
     return () => clearTimeout(id)
   }, [searchQuery])
 
-  // On mount, always default to not showing archived
-  useEffect(() => { setShowArchived(false) }, [])
-
   const clearFilters = useCallback(() => {
     setSearchQuery('')
     setDateFilter('')

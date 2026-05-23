@@ -2,6 +2,7 @@ import { logger } from './logger.js';
 import { handleRequest } from './routes.js';
 import { withCors } from './cors.js';
 import { json } from './utils.js';
+import { withSecurityHeaders } from './securityHeaders.js';
 
 /**
  * Categorize errors for appropriate HTTP response and logging
@@ -54,7 +55,7 @@ export default {
 			const response = await handleRequest(request, env, requestLogger, ctx);
 			const duration = Date.now() - startTime;
 			requestLogger.info('Request completed', { statusCode: response.status, duration: `${duration}ms` });
-			return response;
+			return withSecurityHeaders(env, request, response);
 		} catch (error) {
 			const duration = Date.now() - startTime;
 			const errorInfo = categorizeError(error);
@@ -67,18 +68,18 @@ export default {
 				statusCode: errorInfo.status
 			});
 			
-			// For API requests, return JSON error response
 			const url = new URL(request.url);
+			let errorResponse;
 			if (url.pathname.startsWith('/api/')) {
-				return json(env, {
+				errorResponse = json(env, {
 					error: errorInfo.message,
 					category: errorInfo.category,
 					timestamp: new Date().toISOString()
 				}, { status: errorInfo.status });
+			} else {
+				errorResponse = withCors(env, new Response(errorInfo.message, { status: errorInfo.status }));
 			}
-			
-			// For other requests, return simple error response
-			return withCors(env, new Response(errorInfo.message, { status: errorInfo.status }));
+			return withSecurityHeaders(env, request, errorResponse);
 		}
 	}
 };

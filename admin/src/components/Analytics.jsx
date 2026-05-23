@@ -289,10 +289,13 @@ export function Analytics({ links, currentView }) {
                   params.set('to', range.to)
                   params.set('format', 'json')
 
+                  const headers = {}
+                  if (import.meta?.env?.VITE_AUTH_DISABLED === 'true') {
+                    headers['x-dev-auth'] = '1'
+                  }
                   const response = await fetch(`/api/analytics/export?${params.toString()}`, {
-                    headers: {
-                      Authorization: `Bearer ${localStorage.getItem('auth_token')}`,
-                    },
+                    credentials: 'include',
+                    headers,
                   })
 
                   if (!response.ok) throw new Error('Export failed')
