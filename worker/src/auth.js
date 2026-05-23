@@ -1,20 +1,18 @@
-import { getConfig } from './config.js';
+import { getConfig, isDevBypassEligible } from './config.js';
 import { withTimeout, retryWithBackoff, tokenCache } from './utils.js';
 import { withCors } from './cors.js';
 import { logger } from './logger.js';
 import { parseCookies, verifySessionJwt } from './session.js';
 
 /**
- * Development auth model (local-only):
+ * Dev-auth bypass model (local-only, defense in depth):
  *
- * - Admin dev server (Vite) sets VITE_AUTH_DISABLED=true and sends header `x-dev-auth: 1`
- *   on API requests. See admin/src/services/http.js.
- * - Worker recognizes `x-dev-auth` only when the Host header is localhost/127.0.0.1 and
- *   treats the request as coming from a trusted local UI.
- * - In this case, we return a mock user (getMockUser) and skip authorizedUser checks.
- * - This bypass is independent of AUTH_DISABLED so that UI dev works even when cookies are
- *   blocked or not set.
- * - In production (non-local Host), the header is ignored and normal auth paths apply.
+ * The `x-dev-auth: 1` header lets the Admin dev server skip OAuth. To accept it
+ * ALL of these must hold:
+ *   1. env.AUTH_DISABLED === 'true'
+ *   2. env.ENVIRONMENT === 'development'   (only ever set in worker/.dev.vars)
+ *   3. Host header is localhost / 127.0.0.1
+ * In production any one of these is false, so the header is ignored.
  */
 
 export async function verifyGitHubToken(env, token) {
@@ -57,20 +55,15 @@ export async function verifyGitHubToken(env, token) {
 }
 
 export async function authenticateRequest(env, request) {
-	// Local dev header bypass: allow trusted local requests to act as a mock user
-	// This path is independent of AUTH_DISABLED to make dev more reliable.
-	// Safety: only accept when Host is localhost/127.0.0.1 to prevent production misuse.
-	const devHeader = request.headers.get('x-dev-auth');
-	const hostHeader = (request.headers.get('Host') || '').toLowerCase();
-	const isLocalHost = /^(localhost|127\.0\.0\.1)(:\d+)?$/.test(hostHeader);
-	if (devHeader && isLocalHost) {
-		const { getMockUser } = await import('./config.js');
-		return getMockUser(env);
-	}
-
-	// Bypass entirely when auth is disabled on the Worker
-	const { authDisabled } = getConfig(env);
-	if (authDisabled) {
+	const devEligible = isDevBypassEligible(env);
+	if (devEligible) {
+		const devHeader = request.headers.get('x-dev-auth');
+		const hostHeader = (request.headers.get('Host') || '').toLowerCase();
+		const isLocalHost = /^(localhost|127\.0\.0\.1)(:\d+)?$/.test(hostHeader);
+		if (devHeader && isLocalHost) {
+			const { getMockUser } = await import('./config.js');
+			return getMockUser(env);
+		}
 		const { getMockUser } = await import('./config.js');
 		return getMockUser(env);
 	}
@@ -100,23 +93,16 @@ export async function authenticateRequest(env, request) {
 }
 
 export async function requireAuth(env, request) {
-	// Detect local dev-bypass header to relax enforcement even if AUTH_DISABLED is false
-	const devHeader = request.headers.get('x-dev-auth');
-	const hostHeader = (request.headers.get('Host') || '').toLowerCase();
-	const isLocalHost = /^(localhost|127\.0\.0\.1)(:\d+)?$/.test(hostHeader);
-	const hasLocalDevBypass = !!devHeader && isLocalHost;
+	const skipEnforcement = isDevBypassEligible(env);
 
 	let user = await authenticateRequest(env, request);
-	const { authorizedUser, authDisabled } = getConfig(env);
-	const skipEnforcement = authDisabled || hasLocalDevBypass;
+	const { authorizedUser } = getConfig(env);
 
 	if (!user && skipEnforcement) {
-		// Dev bypass: if disabled mode or trusted local header, return mock user so UI can function
 		const { getMockUser } = await import('./config.js');
 		user = getMockUser(env);
 	}
 	if (!user) return withCors(env, new Response('Unauthorized', { status: 401 }), request);
-	// Skip authorizedUser enforcement when in disabled mode or local dev bypass
 	if (!skipEnforcement && authorizedUser && user.login !== authorizedUser) {
 		return withCors(env, new Response('Forbidden: Access denied', { status: 403 }), request);
 	}
