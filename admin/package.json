@@ -11,7 +11,6 @@
   },
   "dependencies": {
     "@mack-link/shared": "*",
-    "@octokit/oauth-app": "^8.0.1",
     "@tailwindcss/vite": "^4.1.12",
     "@tanstack/react-query": "^5.85.9",
     "@tanstack/react-query-devtools": "^5.85.9",

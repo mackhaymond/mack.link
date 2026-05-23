@@ -1,12 +1,30 @@
 // Analytics using Cloudflare D1 (replaces KV)
 import { dbAll, dbGet, dbRun, dbBatch } from './db.js';
 
+/**
+ * Format a timestamp as a UTC-bucket day string YYYYMMDD.
+ *
+ * M2: UTC-only by design. Per-user timezone bucketing would require
+ * shifting at write time (different buckets per visitor) and is deferred.
+ * The Admin UI labels timeseries as "UTC" to avoid confusion.
+ * TODO(M16): expose timezone-aware buckets if requested.
+ */
 function formatDay(ts = Date.now()) {
 	const d = new Date(ts);
 	const y = d.getUTCFullYear();
 	const m = String(d.getUTCMonth() + 1).padStart(2, '0');
 	const day = String(d.getUTCDate()).padStart(2, '0');
 	return `${y}${m}${day}`;
+}
+
+/**
+ * H18: delete analytics rows older than `retentionDays` (default 365).
+ * Called from the cron handler in index.js. Safe to call multiple times.
+ */
+export async function purgeOldAnalytics(env, retentionDays = 365) {
+	const cutoff = formatDay(Date.now() - retentionDays * 86_400_000);
+	await dbRun(env, `DELETE FROM analytics_day WHERE day < ?`, [cutoff]);
+	await dbRun(env, `DELETE FROM analytics_day_agg WHERE day < ?`, [cutoff]);
 }
 
 function parseDevice(userAgent = '') {

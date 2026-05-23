@@ -6,7 +6,7 @@ on:
   pull_request:
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -15,7 +15,7 @@ env:
 
 jobs:
   validate:
-    name: Validate (lint + build)
+    name: Validate (lint + test + build)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -32,13 +32,14 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Lint (root)
+      - name: Lint
         run: npm run lint
 
-      - name: Build (root-first)
+      - name: Test
+        run: npm test
+
+      - name: Build
         run: |
-          echo "Building admin assets for testing (root-first)..."
-          # Create temporary .env file for admin build with test values
           cat > admin/.env.local << EOL
           VITE_API_BASE=http://localhost:8787
           VITE_WORKER_DOMAIN=localhost:8787
@@ -71,14 +72,21 @@ jobs:
 
       - name: Build worker with embedded admin
         run: |
-          echo "Building worker with embedded admin assets (root-first)..."
-          # Create temporary .env file for admin build with production values
           cat > admin/.env.production << EOL
           VITE_API_BASE=https://link.mackhaymond.co
           VITE_WORKER_DOMAIN=link.mackhaymond.co
           VITE_GITHUB_CLIENT_ID=${{ secrets.OAUTH_CLIENT_ID }}
           EOL
           npm run build
+
+      - name: Apply D1 migrations
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: worker
+          command: d1 migrations list mack-link --remote
+          wranglerVersion: ${{ env.WRANGLER_VERSION }}
 
       - name: Deploy with Wrangler
         uses: cloudflare/wrangler-action@v3
@@ -91,13 +99,11 @@ jobs:
         env:
           JWT_SECRET: ${{ secrets.JWT_SECRET }}
           GITHUB_CLIENT_SECRET: ${{ secrets.OAUTH_CLIENT_SECRET }}
+          GITHUB_CLIENT_ID: ${{ secrets.OAUTH_CLIENT_ID }}
 
       - name: Smoke test deployment
         run: |
           URL="https://link.mackhaymond.co"
-          echo "Checking $URL ..."
-          curl -s -o /dev/null -w "%{http_code}" "$URL/" | grep -q "200"
-          curl -s -o /dev/null -w "%{http_code}" "$URL/admin" | grep -q "200"
+          curl -fsS -o /dev/null "$URL/"
+          curl -fsS -o /dev/null "$URL/admin"
         shell: bash
-        continue-on-error: true
-

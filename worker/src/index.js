@@ -1,8 +1,9 @@
 import { logger } from './logger.js';
 import { handleRequest } from './routes.js';
 import { withCors } from './cors.js';
-import { json } from './utils.js';
+import { json, cleanupExpiredCounters } from './utils.js';
 import { withSecurityHeaders } from './securityHeaders.js';
+import { purgeOldAnalytics } from './analytics.js';
 
 /**
  * Categorize errors for appropriate HTTP response and logging
@@ -81,7 +82,23 @@ export default {
 			}
 			return withSecurityHeaders(env, request, errorResponse);
 		}
-	}
+	},
+
+	/**
+	 * Cron handler. Wired in wrangler.jsonc via triggers.crons. H7+H18:
+	 *   - Daily: purge analytics older than the retention window.
+	 *   - Every run: clean up expired ephemeral counters.
+	 */
+	async scheduled(event, env, ctx) {
+		const retentionDays = Number(env.ANALYTICS_RETENTION_DAYS || 365);
+		const purge = purgeOldAnalytics(env, retentionDays).catch((err) =>
+			logger.error('cron_purge_analytics_failed', { error: err?.message }),
+		);
+		const cleanup = cleanupExpiredCounters(env).catch((err) =>
+			logger.error('cron_cleanup_counters_failed', { error: err?.message }),
+		);
+		ctx.waitUntil(Promise.all([purge, cleanup]));
+	},
 };
 
 
