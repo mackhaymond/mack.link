@@ -220,20 +220,18 @@ export async function getAnalyticsStatements(env, request, shortcode, destinatio
 /**
  * Record a click event with full analytics tracking
  */
-export async function recordClick(env, request, shortcode, destinationUrl = '', requestLogger) {
+export async function recordClick(env, request, shortcode, _destinationUrl = '', requestLogger) {
+	let statements;
 	try {
 		const context = extractAnalyticsContext(request, shortcode);
-		const statements = buildAnalyticsStatements(context);
+		statements = buildAnalyticsStatements(context);
 		await dbBatch(env, statements);
 	} catch (error) {
-		if (requestLogger) {
-			requestLogger.error('Analytics recording failed', {
-				shortcode,
-				error: error.message,
-				statementCount: statements?.length || 0,
-			});
-		}
-		// Re-throw to surface in waitUntil context for monitoring
+		requestLogger?.error('Analytics recording failed', {
+			shortcode,
+			error: error.message,
+			statementCount: statements?.length || 0,
+		});
 		throw error;
 	}
 }

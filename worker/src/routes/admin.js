@@ -1,6 +1,3 @@
-import { withCors } from '../cors.js';
-
-// Import embedded admin assets
 import { adminAssets } from '../admin-assets.js';
 
 export async function handleAdmin(request, env, requestLogger) {

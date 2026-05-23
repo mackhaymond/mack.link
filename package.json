@@ -25,11 +25,12 @@
     "validate:local": "node scripts/validate-deployment.js http://localhost:8787",
     "validate:prod": "node scripts/validate-deployment.js https://link.mackhaymond.co",
     "validate:url": "node scripts/validate-deployment.js \"$npm_config_url\"",
+    "check:bundle-size": "node scripts/check-bundle-size.js",
 
     "install:all": "npm ci",
     "clean": "rm -rf node_modules && npm -w worker run clean || true && rm -f worker/src/admin-assets.js && rm -rf worker/.wrangler && rm -rf admin/dist",
 
-    "lint": "npm -w admin run lint",
+    "lint": "npm -w admin run lint && npm -w worker run lint",
     "lint:all": "npm run lint && echo 'All linting completed'",
 
     "security:audit": "npm audit --audit-level=moderate && npm -w worker exec npm audit --audit-level=moderate || true && npm -w admin exec npm audit --audit-level=moderate || true",

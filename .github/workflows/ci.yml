@@ -47,6 +47,9 @@ jobs:
           EOL
           npm run build
 
+      - name: Check bundle size
+        run: npm run check:bundle-size
+
   deploy:
     name: Deploy (production)
     runs-on: ubuntu-latest

@@ -1,7 +1,7 @@
 import { logger } from '../logger.js';
 import { withCors } from '../cors.js';
-import { recordClick, getAnalyticsStatements } from '../analytics.js';
-import { dbGet, dbRun } from '../db.js';
+import { getAnalyticsStatements } from '../analytics.js';
+import { dbGet } from '../db.js';
 import { verifyPasswordSession, renderPasswordPrompt, readPasswordSessionCookie } from './password.js';
 
 export async function handleRedirect(request, env, requestLogger = logger, ctx) {

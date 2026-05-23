@@ -1,5 +1,3 @@
-import { getConfig } from './config.js';
-
 /**
  * Common security headers applied to every response.
  * HSTS is only added in production (skipped on localhost) to avoid pinning

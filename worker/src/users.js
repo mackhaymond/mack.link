@@ -1,4 +1,4 @@
-import { dbGet, dbRun } from './db.js';
+import { dbRun } from './db.js';
 
 /**
  * Stable owner id derived from a user's GitHub login.

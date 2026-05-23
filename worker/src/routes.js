@@ -1,5 +1,4 @@
 import { withCors, preflight } from './cors.js';
-import { json } from './utils.js';
 import { handleRedirect } from './routes/redirect.js';
 import { handleAPI } from './routes/routerApi.js';
 import { handleAdmin } from './routes/admin.js';
