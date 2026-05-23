@@ -89,6 +89,15 @@ export function CreateLinkForm({ onSubmit, onClose }) {
         if (error) errors[key] = error
       })
 
+      // M7: activation window
+      if (formData.activatesAt && formData.expiresAt) {
+        const a = new Date(formData.activatesAt).getTime()
+        const e = new Date(formData.expiresAt).getTime()
+        if (!isNaN(a) && !isNaN(e) && a >= e) {
+          errors.expiresAt = 'Expiration must be after activation time'
+        }
+      }
+
       if (Object.keys(errors).length > 0) {
         setFieldErrors(errors)
         return

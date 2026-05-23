@@ -95,5 +95,5 @@ export function withCors(env, response, request) {
 }
 
 export function preflight(env, request) {
-	return withCors(env, new Response(null, { status: 204 }), request);
+	return withCors(env, new Response(null, { status: 200 }), request);
 }

@@ -86,6 +86,16 @@ export function EditLinkModal({ link, onSave, onClose }) {
       return
     }
 
+    // M7: activation window
+    if (formData.activatesAt && formData.expiresAt) {
+      const a = new Date(formData.activatesAt).getTime()
+      const e = new Date(formData.expiresAt).getTime()
+      if (!isNaN(a) && !isNaN(e) && a >= e) {
+        setError('Expiration must be after activation time')
+        return
+      }
+    }
+
     try {
       setLoading(true)
       const toISO = (s) =>
