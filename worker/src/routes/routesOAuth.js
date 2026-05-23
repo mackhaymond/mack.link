@@ -1,18 +1,25 @@
-import { getConfig, getMockUser } from '../config.js';
-import { withCors } from '../cors.js';
+import { getConfig, getMockUser, isDevBypassEligible } from '../config.js';
+import { withCors, isRedirectUriAllowed } from '../cors.js';
 import { generateStateToken } from '../auth.js';
 import { withTimeout, retryWithBackoff } from '../utils.js';
 import { logger } from '../logger.js';
 
-// Dev-only: programmatic login endpoint for Playwright/AI when AUTH_DISABLED=true
+function jsonError(env, request, status, error, description) {
+	return withCors(
+		env,
+		new Response(JSON.stringify({ error, error_description: description }), {
+			status,
+			headers: { 'Content-Type': 'application/json' },
+		}),
+		request,
+	);
+}
+
+// Dev-only: programmatic login endpoint for Playwright/AI when AUTH_DISABLED=true.
+// Only enabled when isDevBypassEligible() is true (AUTH_DISABLED=true AND ENVIRONMENT=development).
 export async function handleDevAuthLogin(request, env) {
-	const config = getConfig(env);
-	// Allow when AUTH_DISABLED or trusted local dev header present
-	const devHeader = request.headers.get('x-dev-auth');
-	const hostHeader = (request.headers.get('Host') || '').toLowerCase();
-	const isLocalHost = /^(localhost|127\.0\.0\.1)(:\d+)?$/.test(hostHeader);
-	if (!config.authDisabled && !(devHeader && isLocalHost)) {
-		return withCors(env, new Response(JSON.stringify({ error: 'forbidden', error_description: 'Dev auth not enabled' }), { status: 403, headers: { 'Content-Type': 'application/json' } }), request);
+	if (!isDevBypassEligible(env)) {
+		return jsonError(env, request, 403, 'forbidden', 'Dev auth not enabled');
 	}
 	try {
 		// Optional overrides via body { login, name, avatar_url }
@@ -52,6 +59,10 @@ export async function handleDevAuthLogin(request, env) {
 export async function handleGitHubAuth(request, env) {
 	const url = new URL(request.url);
 	const redirectUri = url.searchParams.get('redirect_uri') || 'http://localhost:5173/auth/callback';
+	if (!isRedirectUriAllowed(env, redirectUri)) {
+		logger.warn('OAuth start: rejecting redirect_uri not on allow-list', { redirectUri });
+		return jsonError(env, request, 400, 'invalid_redirect_uri', 'redirect_uri is not on the allow-list');
+	}
 	const state = generateStateToken();
 	const config = getConfig(env);
 
@@ -108,12 +119,10 @@ export async function handleGitHubCallback(request, env) {
 		return [kv.slice(0, idx), kv.slice(idx + 1)];
 	}));
 	const cookieState = cookies['oauth_state'];
-	// Accept missing oauth_state in dev-disabled localhost flow where insecure cookies may be used
-	// Verify localhost flags are not used to bypass state in production; only allow when AUTH_DISABLED
-	if (!cookieState || (state && cookieState !== state)) {
-		if (!config.authDisabled) {
-			return withCors(env, new Response(JSON.stringify({ error: 'invalid_state', error_description: 'OAuth state mismatch' }), { status: 400, headers: { 'Content-Type': 'application/json' } }), request);
-		}
+	// H3: state must always validate. The dev-login flow has its own endpoint
+	// (/api/auth/dev/login) so the real OAuth flow must not relax CSRF checks.
+	if (!cookieState || !state || cookieState !== state) {
+		return jsonError(env, request, 400, 'invalid_state', 'OAuth state mismatch');
 	}
 
 	// Short-circuit for auth-disabled dev mode: return mock user and set/refresh session
