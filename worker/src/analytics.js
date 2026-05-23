@@ -54,17 +54,32 @@ function parseOS(userAgent = '') {
 	return 'other';
 }
 
+/**
+ * Extract UTM / click-id parameters from a URL.
+ * M5: includes utm_id and the common ad-platform click IDs (gclid, fbclid,
+ * msclkid). Each value is capped to 255 chars to bound table key size.
+ */
+const UTM_KEYS = ['utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content', 'utm_id', 'gclid', 'fbclid', 'msclkid'];
+const UTM_KEY_MAP = {
+	utm_source: 'source',
+	utm_medium: 'medium',
+	utm_campaign: 'campaign',
+	utm_term: 'term',
+	utm_content: 'content',
+	utm_id: 'utm_id',
+	gclid: 'gclid',
+	fbclid: 'fbclid',
+	msclkid: 'msclkid',
+};
 function parseUTMParams(url) {
 	const utmParams = {};
 	try {
 		const urlObj = new URL(url);
 		const params = urlObj.searchParams;
-
-		if (params.get('utm_source')) utmParams.source = params.get('utm_source');
-		if (params.get('utm_medium')) utmParams.medium = params.get('utm_medium');
-		if (params.get('utm_campaign')) utmParams.campaign = params.get('utm_campaign');
-		if (params.get('utm_term')) utmParams.term = params.get('utm_term');
-		if (params.get('utm_content')) utmParams.content = params.get('utm_content');
+		for (const key of UTM_KEYS) {
+			const value = params.get(key);
+			if (value) utmParams[UTM_KEY_MAP[key]] = value.slice(0, 255);
+		}
 	} catch {}
 	return utmParams;
 }
@@ -75,10 +90,16 @@ function parseUTMParams(url) {
 function extractAnalyticsContext(request, shortcode) {
 	const userAgent = request.headers.get('User-Agent') || '';
 	const ref = request.headers.get('Referer') || '';
+	// M4: treat Sec-Fetch-Site: none (direct nav from address bar / bookmarks)
+	// and empty Referer as '(direct)'.
+	const secFetchSite = (request.headers.get('Sec-Fetch-Site') || '').toLowerCase();
 	let refHost = '';
-	try {
-		if (ref) refHost = new URL(ref).host;
-	} catch {}
+	if (ref) {
+		try { refHost = new URL(ref).host; } catch { refHost = ''; }
+	}
+	if (!refHost && (secFetchSite === 'none' || ref === '')) {
+		refHost = '(direct)';
+	}
 
 	// Enhanced analytics data from Cloudflare
 	const country = (request.cf && request.cf.country) || '??';
@@ -231,13 +252,11 @@ export async function getTimeseries(env, shortcode, fromISO, toISO) {
 	]);
 	const map = new Map(rows.map((r) => [r.day, r.clicks]));
 	const points = [];
-	for (
-		let d = new Date(Date.UTC(from.getUTCFullYear(), from.getUTCMonth(), from.getUTCDate()));
-		d <= to;
-		d.setUTCDate(d.getUTCDate() + 1)
-	) {
-		const k = formatDay(d.getTime());
-		points.push({ date: d.toISOString().slice(0, 10), clicks: map.get(k) || 0 });
+	const startMs = Date.UTC(from.getUTCFullYear(), from.getUTCMonth(), from.getUTCDate());
+	const endMs = to.getTime();
+	for (let ts = startMs; ts <= endMs; ts += 86_400_000) {
+		const k = formatDay(ts);
+		points.push({ date: new Date(ts).toISOString().slice(0, 10), clicks: map.get(k) || 0 });
 	}
 	return { points };
 }
@@ -275,14 +294,12 @@ export async function getTimeseriesByLinks(env, fromISO, toISO, limit = 5) {
 		[...shortcodes, start, end],
 	);
 
-	// Build day labels
+	// M3: iterate by timestamp instead of mutating a Date object.
 	const labels = [];
-	for (
-		let d = new Date(Date.UTC(from.getUTCFullYear(), from.getUTCMonth(), from.getUTCDate()));
-		d <= to;
-		d.setUTCDate(d.getUTCDate() + 1)
-	) {
-		labels.push(d.toISOString().slice(0, 10));
+	const startMs = Date.UTC(from.getUTCFullYear(), from.getUTCMonth(), from.getUTCDate());
+	const endMs = to.getTime();
+	for (let ts = startMs; ts <= endMs; ts += 86_400_000) {
+		labels.push(new Date(ts).toISOString().slice(0, 10));
 	}
 
 	// Index rows per shortcode/day

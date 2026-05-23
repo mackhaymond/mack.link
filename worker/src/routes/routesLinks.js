@@ -1,6 +1,6 @@
 import { withCors } from '../cors.js';
 import { sanitizeInput, isRateLimitedPersistent } from '../utils.js';
-import { validateShortcode, validateUrl, validateDescription, validateRedirectType, validateTags, validateISODate } from '../validation.js';
+import { validateShortcode, validateUrl, validateDescription, validateRedirectType, validateTags, validateISODate, validateActivationWindow } from '../validation.js';
 import { dbAll, dbGet, dbRun } from '../db.js';
 import { getConfig } from '../config.js';
 import { createPasswordHash, validatePasswordStrength } from '../password.js';
@@ -48,7 +48,9 @@ function safeParseJsonArray(text) {
 	if (!text) return [];
 	try {
 		const v = JSON.parse(text);
-		return Array.isArray(v) ? v : [];
+		if (!Array.isArray(v)) return [];
+		// M15: ensure every element is a string, drop anything else.
+		return v.filter((x) => typeof x === 'string');
 	} catch {
 		return [];
 	}
@@ -119,6 +121,13 @@ export async function createLink(request, env, ownerId) {
 			return withCors(
 				env,
 				new Response(JSON.stringify({ error: expiresAtError }), { status: 400, headers: { 'Content-Type': 'application/json' } }),
+				request,
+			);
+		const windowError = validateActivationWindow(activatesAt, expiresAt);
+		if (windowError)
+			return withCors(
+				env,
+				new Response(JSON.stringify({ error: windowError }), { status: 400, headers: { 'Content-Type': 'application/json' } }),
 				request,
 			);
 

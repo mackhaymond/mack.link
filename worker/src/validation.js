@@ -138,3 +138,16 @@ export function validateISODate(dateStr, { allowPast = true } = {}) {
 	if (!allowPast && d.getTime() < Date.now()) return 'Date must be in the future';
 	return null;
 }
+
+/**
+ * M7: ensure activatesAt < expiresAt. Returns null if either is missing
+ * (those are independently valid), otherwise an error string.
+ */
+export function validateActivationWindow(activatesAt, expiresAt) {
+	if (!activatesAt || !expiresAt) return null;
+	const a = new Date(activatesAt).getTime();
+	const e = new Date(expiresAt).getTime();
+	if (isNaN(a) || isNaN(e)) return null;
+	if (a >= e) return 'Activation time must be earlier than expiration time';
+	return null;
+}
