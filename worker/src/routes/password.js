@@ -1,6 +1,50 @@
 import { withCors } from '../cors.js';
 import { verifyPasswordHash, generateSessionToken } from '../password.js';
 import { dbGet, dbRun } from '../db.js';
+import { getConfig } from '../config.js';
+import { isRateLimitedPersistent } from '../utils.js';
+import { logger } from '../logger.js';
+
+const PASSWORD_SESSION_TTL_SECONDS = 3600;
+
+/**
+ * Build the cookie name for a per-shortcode password session.
+ * Scope-restricted to /{shortcode} so a session for /foo doesn't authorize /bar.
+ */
+function passwordSessionCookieName(shortcode) {
+	return `pwd_session_${shortcode}`;
+}
+
+/**
+ * Build the Set-Cookie header for a verified password session.
+ * httpOnly + Secure + SameSite=Lax + Path=/{shortcode}.
+ * Secure is dropped when SESSION_ALLOW_INSECURE_COOKIES=true (dev only).
+ */
+export function buildPasswordSessionCookie(env, shortcode, token) {
+	const { allowInsecureCookies } = getConfig(env);
+	const secure = allowInsecureCookies ? '' : ' Secure;';
+	const path = `/${encodeURIComponent(shortcode)}`;
+	return `${passwordSessionCookieName(shortcode)}=${token}; Max-Age=${PASSWORD_SESSION_TTL_SECONDS}; Path=${path}; HttpOnly;${secure} SameSite=Lax`;
+}
+
+function parseCookieHeader(header) {
+	if (!header) return {};
+	return Object.fromEntries(
+		header.split(/;\s*/).filter(Boolean).map((kv) => {
+			const idx = kv.indexOf('=');
+			if (idx === -1) return [kv, ''];
+			return [kv.slice(0, idx), kv.slice(idx + 1)];
+		}),
+	);
+}
+
+/**
+ * Read the password-session token for the given shortcode from request cookies.
+ */
+export function readPasswordSessionCookie(request, shortcode) {
+	const cookies = parseCookieHeader(request.headers.get('Cookie') || '');
+	return cookies[passwordSessionCookieName(shortcode)] || null;
+}
 
 /**
  * Handle password verification for protected links
@@ -18,6 +62,24 @@ export async function handlePasswordVerification(request, env) {
 				env,
 				new Response(JSON.stringify({ error: 'Shortcode and password are required' }), {
 					status: 400,
+					headers: { 'Content-Type': 'application/json' },
+				}),
+				request,
+			);
+		}
+
+		// H5: rate-limit password attempts per (shortcode + IP) per minute.
+		const { rateLimits } = getConfig(env);
+		const limited = await isRateLimitedPersistent(env, request, {
+			key: `password:${shortcode}`,
+			limit: Number(rateLimits.passwordVerifyPerMinute || 10),
+			windowMs: 60 * 1000,
+		});
+		if (limited) {
+			return withCors(
+				env,
+				new Response(JSON.stringify({ error: 'Too many attempts. Please wait a minute and try again.' }), {
+					status: 429,
 					headers: { 'Content-Type': 'application/json' },
 				}),
 				request,
@@ -110,33 +172,27 @@ export async function handlePasswordVerification(request, env) {
 			);
 		}
 
-		// Generate session token for this link
 		const sessionToken = generateSessionToken();
-
-		// Store session in D1 with 1 hour expiration
 		const sessionKey = `pwd_session:${shortcode}:${sessionToken}`;
-		const expiresAt = new Date(Date.now() + 3600 * 1000).toISOString(); // 1 hour from now
-		
-		// Store with both value (expiry timestamp) and expires_at for cleanup
-		await dbRun(env, `INSERT OR REPLACE INTO counters (name, value, expires_at) VALUES (?, ?, ?)`, [sessionKey, expiresAt, expiresAt]);
+		const expiresAtISO = new Date(Date.now() + PASSWORD_SESSION_TTL_SECONDS * 1000).toISOString();
+		await dbRun(env, `INSERT OR REPLACE INTO counters (name, value, expires_at) VALUES (?, ?, ?)`, [sessionKey, expiresAtISO, expiresAtISO]);
 
-		return withCors(
-			env,
-			new Response(
-				JSON.stringify({
-					success: true,
-					sessionToken,
-					url: link.url,
-					message: 'Password verified successfully',
-				}),
-				{
-					headers: { 'Content-Type': 'application/json' },
-				},
-			),
-			request,
+		// C5: return the token as an httpOnly cookie scoped to /{shortcode}.
+		// Body no longer includes the raw token; client redirects to /{shortcode}
+		// without putting the secret in the URL (where it would leak via Referer
+		// headers, browser history, and server access logs).
+		const response = new Response(
+			JSON.stringify({
+				success: true,
+				url: link.url,
+				message: 'Password verified successfully',
+			}),
+			{ headers: { 'Content-Type': 'application/json' } },
 		);
+		response.headers.append('Set-Cookie', buildPasswordSessionCookie(env, shortcode, sessionToken));
+		return withCors(env, response, request);
 	} catch (error) {
-		console.error('Password verification error:', error);
+		logger.error('Password verification failed', { error: error.message });
 		return withCors(
 			env,
 			new Response(JSON.stringify({ error: 'Invalid request format' }), {
@@ -149,33 +205,22 @@ export async function handlePasswordVerification(request, env) {
 }
 
 /**
- * Verify if a session token is valid for a protected link
+ * Verify a password-session token for a shortcode. Distinguishes:
+ *   - 'valid'   : matching, unexpired
+ *   - 'invalid' : missing or expired
+ * Throws on DB errors (callers should let those bubble to a 500). H20.
  */
 export async function verifyPasswordSession(env, shortcode, sessionToken) {
-	if (!shortcode || !sessionToken) {
+	if (!shortcode || !sessionToken) return false;
+	const sessionKey = `pwd_session:${shortcode}:${sessionToken}`;
+	const session = await dbGet(env, `SELECT value FROM counters WHERE name = ?`, [sessionKey]);
+	if (!session) return false;
+	const expiresAt = new Date(session.value);
+	if (Date.now() > expiresAt.getTime()) {
+		await dbRun(env, `DELETE FROM counters WHERE name = ?`, [sessionKey]);
 		return false;
 	}
-
-	try {
-		const sessionKey = `pwd_session:${shortcode}:${sessionToken}`;
-		const session = await dbGet(env, `SELECT value FROM counters WHERE name = ?`, [sessionKey]);
-
-		if (!session) {
-			return false;
-		}
-
-		// Check if session has expired
-		const expiresAt = new Date(session.value);
-		if (Date.now() > expiresAt.getTime()) {
-			// Clean up expired session
-			await dbRun(env, `DELETE FROM counters WHERE name = ?`, [sessionKey]);
-			return false;
-		}
-
-		return true;
-	} catch (error) {
-		return false;
-	}
+	return true;
 }
 
 /**
@@ -267,16 +312,19 @@ export function renderPasswordPrompt(shortcode, error = null) {
         const result = await response.json();
 
         if (result.success) {
-          // Store session token in sessionStorage
-          sessionStorage.setItem('pwd_session_${escapeHtml(shortcode)}', result.sessionToken);
-          // Redirect back to the short link with session token
-          const redirectUrl = new URL('/${escapeHtml(shortcode)}', window.location.origin);
-          redirectUrl.searchParams.set('session', result.sessionToken);
-          window.location.href = redirectUrl.toString();
+          // C5: session cookie is set by the server. Just reload the short link;
+          // the cookie is httpOnly and scoped to /\${shortcode}.
+          window.location.href = '/${escapeHtml(shortcode)}';
+        } else if (response.status === 429) {
+          alert(result.error || 'Too many attempts. Please wait and try again.');
+          submitBtn.disabled = false;
+          btnText.textContent = 'Continue';
         } else {
-          // Show error and reload page
           alert(result.error || 'Invalid password');
-          window.location.reload();
+          submitBtn.disabled = false;
+          btnText.textContent = 'Continue';
+          passwordInput.value = '';
+          passwordInput.focus();
         }
       } catch (error) {
         alert('An error occurred. Please try again.');

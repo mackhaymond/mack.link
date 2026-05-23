@@ -2,7 +2,7 @@ import { logger } from '../logger.js';
 import { withCors } from '../cors.js';
 import { recordClick, getAnalyticsStatements } from '../analytics.js';
 import { dbGet, dbRun } from '../db.js';
-import { verifyPasswordSession, renderPasswordPrompt } from './password.js';
+import { verifyPasswordSession, renderPasswordPrompt, readPasswordSessionCookie } from './password.js';
 
 export async function handleRedirect(request, env, requestLogger = logger, ctx) {
 	const url = new URL(request.url);
@@ -45,23 +45,20 @@ export async function handleRedirect(request, env, requestLogger = logger, ctx) 
 		}
 	}
 
-	// Check for password protection
+	// C5: read the password session token from a per-shortcode httpOnly cookie
+	// rather than the URL query string (URL would leak the secret via Referer,
+	// browser history, and server access logs).
 	if (link.passwordEnabled && link.passwordHash) {
-		const url = new URL(request.url);
-		const sessionToken = url.searchParams.get('session');
-
-		// Check if valid session token provided
-		if (sessionToken) {
-			const isValidSession = await verifyPasswordSession(env, shortcode, sessionToken);
-			if (!isValidSession) {
-				return new Response(renderPasswordPrompt(shortcode, 'Session expired. Please enter password again.'), {
-					status: 401,
-					headers: { 'Content-Type': 'text/html; charset=utf-8' },
-				});
-			}
-		} else {
-			// No session token, show password prompt
+		const sessionToken = readPasswordSessionCookie(request, shortcode);
+		if (!sessionToken) {
 			return new Response(renderPasswordPrompt(shortcode), {
+				status: 401,
+				headers: { 'Content-Type': 'text/html; charset=utf-8' },
+			});
+		}
+		const isValidSession = await verifyPasswordSession(env, shortcode, sessionToken);
+		if (!isValidSession) {
+			return new Response(renderPasswordPrompt(shortcode, 'Session expired. Please enter password again.'), {
 				status: 401,
 				headers: { 'Content-Type': 'text/html; charset=utf-8' },
 			});
