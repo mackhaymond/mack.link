@@ -1,6 +1,5 @@
--- D1 schema for mack.link
+-- Baseline schema. Idempotent (every statement uses IF NOT EXISTS).
 
--- Links table
 CREATE TABLE IF NOT EXISTS links (
   shortcode TEXT PRIMARY KEY,
   url TEXT NOT NULL,
@@ -18,7 +17,6 @@ CREATE TABLE IF NOT EXISTS links (
   last_clicked TEXT
 );
 
--- Profile (single row with id=1)
 CREATE TABLE IF NOT EXISTS profile (
   id INTEGER PRIMARY KEY CHECK (id = 1),
   title TEXT NOT NULL DEFAULT 'Mack Haymond',
@@ -33,14 +31,12 @@ CREATE TABLE IF NOT EXISTS profile (
   updated_at TEXT NOT NULL
 );
 
--- Ensure default profile row exists
 INSERT OR IGNORE INTO profile (
   id, title, description, avatar_url, theme, background_type, background_value, is_active, custom_css, created_at, updated_at
 ) VALUES (
   1, 'Mack Haymond', 'Software Developer & Creator', '', 'default', 'gradient', 'blue-purple', 1, '', datetime('now'), datetime('now')
 );
 
--- Profile links
 CREATE TABLE IF NOT EXISTS profile_links (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   title TEXT NOT NULL,
@@ -53,7 +49,6 @@ CREATE TABLE IF NOT EXISTS profile_links (
   updated_at TEXT NOT NULL
 );
 
--- Analytics totals per day per scope (shortcode or '_all')
 CREATE TABLE IF NOT EXISTS analytics_day (
   scope TEXT NOT NULL,
   day TEXT NOT NULL,
@@ -61,7 +56,6 @@ CREATE TABLE IF NOT EXISTS analytics_day (
   PRIMARY KEY (scope, day)
 );
 
--- Analytics breakdown aggregated (overall)
 CREATE TABLE IF NOT EXISTS analytics_agg (
   scope TEXT NOT NULL,
   dimension TEXT NOT NULL,
@@ -70,7 +64,6 @@ CREATE TABLE IF NOT EXISTS analytics_agg (
   PRIMARY KEY (scope, dimension, key)
 );
 
--- Analytics breakdown per day
 CREATE TABLE IF NOT EXISTS analytics_day_agg (
   scope TEXT NOT NULL,
   day TEXT NOT NULL,
@@ -80,14 +73,11 @@ CREATE TABLE IF NOT EXISTS analytics_day_agg (
   PRIMARY KEY (scope, day, dimension, key)
 );
 
--- Global counters (expires_at supports ephemeral entries for rate limiting and password sessions)
 CREATE TABLE IF NOT EXISTS counters (
   name TEXT PRIMARY KEY,
-  value INTEGER DEFAULT 0,
-  expires_at TEXT
+  value INTEGER DEFAULT 0
 );
 
--- Indexes for better performance
 CREATE INDEX IF NOT EXISTS idx_analytics_day_scope_day ON analytics_day(scope, day);
 CREATE INDEX IF NOT EXISTS idx_analytics_agg_scope_dimension ON analytics_agg(scope, dimension);
 CREATE INDEX IF NOT EXISTS idx_analytics_day_agg_scope_day_dimension ON analytics_day_agg(scope, day, dimension);
@@ -95,4 +85,3 @@ CREATE INDEX IF NOT EXISTS idx_links_archived_created ON links(archived, created
 CREATE INDEX IF NOT EXISTS idx_links_clicks ON links(clicks);
 CREATE INDEX IF NOT EXISTS idx_profile_links_order ON profile_links(order_index);
 CREATE INDEX IF NOT EXISTS idx_profile_links_visible ON profile_links(is_visible);
-CREATE INDEX IF NOT EXISTS idx_counters_expires_at ON counters(expires_at) WHERE expires_at IS NOT NULL;

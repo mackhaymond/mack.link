@@ -64,15 +64,20 @@ export async function handleRedirect(request, env, requestLogger = logger, ctx) 
 			});
 		}
 	}
-	// Skip counting for bots, crawlers, and prefetch/HEAD
+	// C9: filter bots, prefetch hints, and HEAD requests BEFORE building the
+	// analytics statement batch. These requests still get the redirect, but
+	// we skip both the link click increment and the analytics writes so that
+	// prefetch implementations (Chrome speculation, Firefox link-prefetch,
+	// Safari pre-rendering, etc.) don't inflate click counts.
 	const ua = request.headers.get('User-Agent') || '';
 	const method = request.method || 'GET';
 	const isBot =
-		/(bot|spider|crawler|preview|facebookexternalhit|slackbot|discordbot|twitterbot|linkedinbot|embedly|quora link|whatsapp|skypeuripreview|googlebot|bingbot|yahoobot|duckduckbot|baiduspider|yandexbot|applebot|pinterestrequestinfobot|telegrambot|bitlybot|zoom|msteamsbot)/i.test(
+		/(bot|spider|crawler|preview|facebookexternalhit|slackbot|discordbot|twitterbot|linkedinbot|embedly|quora link|whatsapp|skypeuripreview|googlebot|bingbot|yahoobot|duckduckbot|baiduspider|yandexbot|applebot|pinterestrequestinfobot|telegrambot|bitlybot|zoom|msteamsbot|headlesschrome|phantomjs|puppeteer)/i.test(
 			ua,
 		);
 	const isHead = method === 'HEAD';
-	if (!isBot && !isHead) {
+	const isPrefetch = detectPrefetch(request);
+	if (!isBot && !isHead && !isPrefetch) {
 		// Record click and analytics transactionally to prevent data inconsistency
 		try {
 			const now = new Date().toISOString();
@@ -109,8 +114,32 @@ export async function handleRedirect(request, env, requestLogger = logger, ctx) 
 		destination: link.url,
 		redirectType: link.redirectType || 301,
 		previousClicks: link.clicks || 0,
+		bot: isBot,
+		head: isHead,
+		prefetch: isPrefetch,
 	});
 	return Response.redirect(link.url, link.redirectType || 301);
+}
+
+/**
+ * Detect whether the request is a prefetch / speculative fetch initiated by
+ * the browser rather than a real user navigation. We must NOT increment click
+ * counters or record analytics for these.
+ *
+ * Covers:
+ *   - Fetch Metadata spec:  Sec-Purpose: prefetch[, prerender]
+ *                           Sec-Fetch-Dest: prefetch
+ *   - Legacy headers used by Chrome/Firefox/Safari and various browsers.
+ */
+function detectPrefetch(request) {
+	const h = request.headers;
+	const secPurpose = (h.get('Sec-Purpose') || '').toLowerCase();
+	if (secPurpose.includes('prefetch') || secPurpose.includes('prerender')) return true;
+	if ((h.get('Purpose') || '').toLowerCase() === 'prefetch') return true;
+	if ((h.get('X-Moz') || '').toLowerCase() === 'prefetch') return true;
+	if ((h.get('X-Purpose') || '').toLowerCase() === 'prefetch') return true;
+	if ((h.get('Sec-Fetch-Dest') || '').toLowerCase() === 'prefetch') return true;
+	return false;
 }
 
 function htmlError(env, request, status, title, subtitle) {

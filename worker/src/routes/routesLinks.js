@@ -5,30 +5,43 @@ import { dbAll, dbGet, dbRun } from '../db.js';
 import { getConfig } from '../config.js';
 import { createPasswordHash, validatePasswordStrength } from '../password.js';
 
+// C13: explicit column list (never SELECT *, so password_hash can never leak)
+// and capped result count to bound response size.
+const LINK_PUBLIC_COLUMNS = `shortcode, url, description, redirect_type, tags, archived, activates_at, expires_at, created, updated, clicks, last_clicked, password_enabled`;
+const GET_ALL_LINKS_CAP = 500;
+
+function rowToLink(r) {
+	return {
+		url: r.url,
+		description: r.description || '',
+		redirectType: r.redirect_type || 301,
+		tags: safeParseJsonArray(r.tags),
+		archived: !!r.archived,
+		activatesAt: r.activates_at || null,
+		expiresAt: r.expires_at || null,
+		created: r.created,
+		updated: r.updated,
+		clicks: r.clicks || 0,
+		lastClicked: r.last_clicked || null,
+		passwordEnabled: !!r.password_enabled,
+	};
+}
+
 export async function getAllLinks(env, request) {
 	const rows = await dbAll(
 		env,
-		`SELECT shortcode, url, description, redirect_type, tags, archived, activates_at, expires_at, created, updated, clicks, last_clicked, password_enabled FROM links`,
+		`SELECT ${LINK_PUBLIC_COLUMNS} FROM links ORDER BY shortcode ASC LIMIT ?`,
+		[GET_ALL_LINKS_CAP + 1],
 	);
+	const truncated = rows.length > GET_ALL_LINKS_CAP;
+	const page = truncated ? rows.slice(0, GET_ALL_LINKS_CAP) : rows;
 	const links = {};
-	for (const r of rows) {
-		links[r.shortcode] = {
-			url: r.url,
-			description: r.description || '',
-			redirectType: r.redirect_type || 301,
-			tags: safeParseJsonArray(r.tags),
-			archived: !!r.archived,
-			activatesAt: r.activates_at || null,
-			expiresAt: r.expires_at || null,
-			created: r.created,
-			updated: r.updated,
-			clicks: r.clicks || 0,
-			lastClicked: r.last_clicked || null,
-			passwordEnabled: !!r.password_enabled,
-		};
+	for (const r of page) links[r.shortcode] = rowToLink(r);
+	const headers = { 'Content-Type': 'application/json' };
+	if (truncated) {
+		headers['Link'] = '</api/links?limit=500&cursor=' + encodeURIComponent(page[page.length - 1].shortcode) + '>; rel="next"';
 	}
-
-	return withCors(env, new Response(JSON.stringify(links), { headers: { 'Content-Type': 'application/json' } }), request);
+	return withCors(env, new Response(JSON.stringify(links), { headers }), request);
 }
 
 function safeParseJsonArray(text) {
@@ -570,33 +583,18 @@ export async function bulkCreateLinks(request, env) {
 export async function listLinks(env, request) {
 	const url = new URL(request.url);
 	const limit = Math.min(Math.max(parseInt(url.searchParams.get('limit') || '100', 10), 1), 1000);
-	const cursor = url.searchParams.get('cursor') || null; // cursor is last shortcode
+	const cursor = url.searchParams.get('cursor') || null;
 	const rows = await dbAll(
 		env,
 		cursor
-			? `SELECT * FROM links WHERE shortcode > ? ORDER BY shortcode ASC LIMIT ?`
-			: `SELECT * FROM links ORDER BY shortcode ASC LIMIT ?`,
+			? `SELECT ${LINK_PUBLIC_COLUMNS} FROM links WHERE shortcode > ? ORDER BY shortcode ASC LIMIT ?`
+			: `SELECT ${LINK_PUBLIC_COLUMNS} FROM links ORDER BY shortcode ASC LIMIT ?`,
 		cursor ? [cursor, limit + 1] : [limit + 1],
 	);
 	const hasMore = rows.length > limit;
 	const pageRows = hasMore ? rows.slice(0, limit) : rows;
 	const links = {};
-	for (const r of pageRows) {
-		links[r.shortcode] = {
-			url: r.url,
-			description: r.description || '',
-			redirectType: r.redirect_type || 301,
-			tags: safeParseJsonArray(r.tags),
-			archived: !!r.archived,
-			activatesAt: r.activates_at || null,
-			expiresAt: r.expires_at || null,
-			created: r.created,
-			updated: r.updated,
-			clicks: r.clicks || 0,
-			lastClicked: r.last_clicked || null,
-			passwordEnabled: !!r.password_enabled,
-		};
-	}
+	for (const r of pageRows) links[r.shortcode] = rowToLink(r);
 	const nextCursor = hasMore ? pageRows[pageRows.length - 1].shortcode : null;
 	const body = { links, cursor: nextCursor };
 	return withCors(env, new Response(JSON.stringify(body), { headers: { 'Content-Type': 'application/json' } }), request);

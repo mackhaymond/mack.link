@@ -1,0 +1,128 @@
+#!/usr/bin/env node
+/**
+ * Migration runner for D1.
+ *
+ * Tracks applied migrations in a `migrations` table:
+ *   CREATE TABLE migrations (id TEXT PRIMARY KEY, applied_at INTEGER NOT NULL)
+ *
+ * Each file in worker/src/migrations/<NNN>_*.sql is an idempotent migration.
+ * The runner records each ID after success; subsequent runs skip already-applied
+ * files. ALTER-style schema changes that SQLite can't express idempotently get
+ * handled here via PRAGMA table_info() checks.
+ *
+ * Usage:
+ *   node scripts/migrate.mjs --local    # against the local Miniflare D1
+ *   node scripts/migrate.mjs --remote   # against production D1
+ */
+
+import { spawnSync } from 'node:child_process';
+import { readdirSync, readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { tmpdir } from 'node:os';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = join(__dirname, '..');
+const MIGRATIONS_DIR = join(REPO_ROOT, 'src', 'migrations');
+const DB_NAME = 'mack-link';
+
+const flag = process.argv[2];
+if (flag !== '--local' && flag !== '--remote') {
+	console.error('Usage: migrate.mjs --local | --remote');
+	process.exit(2);
+}
+const target = flag;
+
+function wrangler(args) {
+	const result = spawnSync('npx', ['--no-install', 'wrangler', ...args], {
+		cwd: REPO_ROOT,
+		stdio: ['ignore', 'pipe', 'inherit'],
+		encoding: 'utf8',
+	});
+	if (result.status !== 0) {
+		throw new Error(`wrangler ${args.join(' ')} exited with ${result.status}`);
+	}
+	return result.stdout;
+}
+
+function execSql(sql) {
+	const tmp = mkdtempSync(join(tmpdir(), 'mack-link-mig-'));
+	const file = join(tmp, 'mig.sql');
+	writeFileSync(file, sql);
+	try {
+		wrangler(['d1', 'execute', DB_NAME, target, '--file', file]);
+	} finally {
+		rmSync(tmp, { recursive: true, force: true });
+	}
+}
+
+function execSqlJson(sql) {
+	const tmp = mkdtempSync(join(tmpdir(), 'mack-link-mig-q-'));
+	const file = join(tmp, 'q.sql');
+	writeFileSync(file, sql);
+	try {
+		const out = wrangler(['d1', 'execute', DB_NAME, target, '--file', file, '--json']);
+		try {
+			return JSON.parse(out);
+		} catch {
+			return null;
+		}
+	} finally {
+		rmSync(tmp, { recursive: true, force: true });
+	}
+}
+
+function ensureMigrationsTable() {
+	execSql(`CREATE TABLE IF NOT EXISTS migrations (id TEXT PRIMARY KEY, applied_at INTEGER NOT NULL);`);
+}
+
+function appliedIds() {
+	const result = execSqlJson(`SELECT id FROM migrations ORDER BY id ASC;`);
+	const rows = (result?.[0]?.results) || [];
+	return new Set(rows.map((r) => r.id));
+}
+
+function columnExists(table, column) {
+	const result = execSqlJson(`PRAGMA table_info(${table});`);
+	const rows = (result?.[0]?.results) || [];
+	return rows.some((r) => r.name === column);
+}
+
+function maybeAddExpiresAtToCounters() {
+	if (!columnExists('counters', 'expires_at')) {
+		console.log('  + ALTER counters ADD COLUMN expires_at TEXT');
+		execSql(`ALTER TABLE counters ADD COLUMN expires_at TEXT;`);
+	} else {
+		console.log('  · counters.expires_at already present');
+	}
+}
+
+const PROGRAMMATIC_STEPS = {
+	'002_counters_expiry.sql': maybeAddExpiresAtToCounters,
+};
+
+function main() {
+	console.log(`Running migrations against ${target.replace('--', '')} D1`);
+	ensureMigrationsTable();
+	const applied = appliedIds();
+	const files = readdirSync(MIGRATIONS_DIR)
+		.filter((f) => /^\d{3}_.+\.sql$/.test(f))
+		.sort();
+	let ran = 0;
+	for (const f of files) {
+		if (applied.has(f)) {
+			console.log(`= ${f} (already applied)`);
+			continue;
+		}
+		console.log(`+ ${f}`);
+		const programmatic = PROGRAMMATIC_STEPS[f];
+		if (programmatic) programmatic();
+		const sql = readFileSync(join(MIGRATIONS_DIR, f), 'utf8');
+		if (sql.trim().length > 0) execSql(sql);
+		execSql(`INSERT INTO migrations (id, applied_at) VALUES ('${f}', ${Date.now()});`);
+		ran++;
+	}
+	console.log(`Done. ${ran} new, ${files.length - ran} already applied.`);
+}
+
+main();

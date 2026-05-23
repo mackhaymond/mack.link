@@ -14,8 +14,10 @@
 		"tail": "wrangler tail",
 		"test": "vitest run",
 		"test:watch": "vitest",
-		"db:apply:local": "wrangler d1 execute mack-link --local --file src/schema.sql",
-		"db:apply": "wrangler d1 execute mack-link --file src/schema.sql",
+		"db:apply:local": "node scripts/migrate.mjs --local",
+		"db:apply": "node scripts/migrate.mjs --remote",
+		"db:apply:schema:local": "wrangler d1 execute mack-link --local --file src/schema.sql",
+		"db:apply:schema": "wrangler d1 execute mack-link --file src/schema.sql",
 		"clean": "rm -rf node_modules .wrangler"
 	},
 	"devDependencies": {
