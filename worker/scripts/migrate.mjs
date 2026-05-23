@@ -97,8 +97,38 @@ function maybeAddExpiresAtToCounters() {
 	}
 }
 
+function maybeAddOwnerIdToLinks() {
+	const authorizedUser = process.env.AUTHORIZED_USER || 'legacy';
+	const ownerId = `gh:${authorizedUser}`;
+	const now = Date.now();
+	// Ensure users table exists before we INSERT into it.
+	execSql(
+		`CREATE TABLE IF NOT EXISTS users (
+			id TEXT PRIMARY KEY,
+			github_login TEXT UNIQUE NOT NULL,
+			email TEXT,
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL
+		);`,
+	);
+	if (!columnExists('links', 'owner_id')) {
+		console.log(`  + ALTER links ADD COLUMN owner_id TEXT (backfill -> ${ownerId})`);
+		// SQLite can't add NOT NULL without a default. We add as nullable,
+		// backfill, then rely on application-layer enforcement + the index.
+		execSql(`ALTER TABLE links ADD COLUMN owner_id TEXT;`);
+		execSql(
+			`INSERT OR IGNORE INTO users (id, github_login, email, created_at, updated_at)
+			 VALUES ('${ownerId}', '${authorizedUser}', NULL, ${now}, ${now});`,
+		);
+		execSql(`UPDATE links SET owner_id = '${ownerId}' WHERE owner_id IS NULL;`);
+	} else {
+		console.log('  · links.owner_id already present');
+	}
+}
+
 const PROGRAMMATIC_STEPS = {
 	'002_counters_expiry.sql': maybeAddExpiresAtToCounters,
+	'003_owner_id.sql': maybeAddOwnerIdToLinks,
 };
 
 function main() {
@@ -115,6 +145,8 @@ function main() {
 			continue;
 		}
 		console.log(`+ ${f}`);
+		// Programmatic step runs FIRST so it can ALTER TABLE / add columns that
+		// any subsequent SQL (e.g. partial indexes on the new column) depends on.
 		const programmatic = PROGRAMMATIC_STEPS[f];
 		if (programmatic) programmatic();
 		const sql = readFileSync(join(MIGRATIONS_DIR, f), 'utf8');

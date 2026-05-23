@@ -1,8 +1,18 @@
 -- D1 schema for mack.link
+-- For fresh installs; existing deployments should use `npm run db:apply` which
+-- invokes the JS migration runner instead.
 
--- Links table
+CREATE TABLE IF NOT EXISTS users (
+  id TEXT PRIMARY KEY,
+  github_login TEXT UNIQUE NOT NULL,
+  email TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS links (
   shortcode TEXT PRIMARY KEY,
+  owner_id TEXT,
   url TEXT NOT NULL,
   description TEXT DEFAULT '',
   redirect_type INTEGER DEFAULT 301,
@@ -17,6 +27,8 @@ CREATE TABLE IF NOT EXISTS links (
   clicks INTEGER DEFAULT 0,
   last_clicked TEXT
 );
+
+CREATE INDEX IF NOT EXISTS idx_links_owner_shortcode ON links(owner_id, shortcode);
 
 -- Profile (single row with id=1)
 CREATE TABLE IF NOT EXISTS profile (

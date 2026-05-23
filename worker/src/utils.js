@@ -155,17 +155,19 @@ let lastCleanupAt = 0;
 const CLEANUP_INTERVAL_MS = 60_000;
 
 function maybeScheduleCleanup(env, ctx) {
+	// Only fire cleanup when we have an ExecutionContext to anchor it via
+	// waitUntil. Without one, the promise would float - breaking test
+	// isolation in Miniflare and risking termination by the Workers runtime.
+	// Cron/test paths can call cleanupExpiredCounters directly if needed.
+	if (!ctx || typeof ctx.waitUntil !== 'function') return;
 	const now = Date.now();
 	if (now - lastCleanupAt < CLEANUP_INTERVAL_MS) return;
 	lastCleanupAt = now;
-	const promise = cleanupExpiredCounters(env).catch((err) => {
-		logger.error('cleanup_expired_counters_failed', { error: err?.message });
-	});
-	if (ctx && typeof ctx.waitUntil === 'function') {
-		ctx.waitUntil(promise);
-	}
-	// If no ctx is available (cron/test paths), the promise still runs;
-	// failures are logged via .catch above so it's not a floating-rejection.
+	ctx.waitUntil(
+		cleanupExpiredCounters(env).catch((err) => {
+			logger.error('cleanup_expired_counters_failed', { error: err?.message });
+		}),
+	);
 }
 
 /**
