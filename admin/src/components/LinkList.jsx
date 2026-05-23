@@ -4,6 +4,7 @@ import {
   Edit,
   Trash2,
   Copy,
+  Check,
   BarChart3,
   Link as LinkIcon,
   CheckSquare,
@@ -28,6 +29,8 @@ const LinkList = memo(function LinkList({ links, onDelete, onUpdate, onBulkDelet
   const [copiedShortcode, setCopiedShortcode] = useState(null)
   const [deleteModalOpen, setDeleteModalOpen] = useState(false)
   const [linkToDelete, setLinkToDelete] = useState(null)
+  // H13: bulk delete confirmation
+  const [bulkDeleteModalOpen, setBulkDeleteModalOpen] = useState(false)
   const [selectedLinks, setSelectedLinks] = useState(new Set())
   const [bulkMode, setBulkMode] = useState(false)
   const [qrModalOpen, setQrModalOpen] = useState(false)
@@ -103,6 +106,10 @@ const LinkList = memo(function LinkList({ links, onDelete, onUpdate, onBulkDelet
   }, [])
 
   const handleBulkDelete = useCallback(() => {
+    if (selectedLinks.size > 0) setBulkDeleteModalOpen(true)
+  }, [selectedLinks])
+
+  const confirmBulkDelete = useCallback(() => {
     if (selectedLinks.size > 0 && onBulkDelete) {
       onBulkDelete(Array.from(selectedLinks))
       setSelectedLinks(new Set())
@@ -316,7 +323,8 @@ className="w-9 h-9 xs:w-10 xs:h-10 sm:w-12 sm:h-12 text-gray-400 dark:text-gray-
                         </button>
                       </div>
                       {copiedShortcode === shortcode && (
-                        <span className="text-xs xs:text-sm text-green-600 dark:text-green-400" role="status" aria-live="polite">
+                        <span className="inline-flex items-center gap-1 text-xs xs:text-sm text-green-600 dark:text-green-400" role="status" aria-live="polite">
+                          <Check className="w-3.5 h-3.5" aria-hidden="true" />
                           Copied!
                         </span>
                       )}
@@ -531,6 +539,16 @@ className="w-9 h-9 xs:w-10 xs:h-10 sm:w-12 sm:h-12 text-gray-400 dark:text-gray-
         title="Delete Link"
         message={`Are you sure you want to delete the link "${linkToDelete}"? This action cannot be undone.`}
         confirmText="Delete"
+        type="danger"
+      />
+
+      <ConfirmationModal
+        isOpen={bulkDeleteModalOpen}
+        onClose={() => setBulkDeleteModalOpen(false)}
+        onConfirm={confirmBulkDelete}
+        title={`Delete ${selectedLinks.size} link${selectedLinks.size === 1 ? '' : 's'}?`}
+        message={`This will permanently delete ${selectedLinks.size} link${selectedLinks.size === 1 ? '' : 's'}. This action cannot be undone.`}
+        confirmText={`Delete ${selectedLinks.size}`}
         type="danger"
       />
 

@@ -10,6 +10,9 @@ export default defineConfig({
     target: 'es2020',
     outDir: 'dist',
     assetsDir: 'assets',
+    // M11: emit sourcemaps but don't reference them in the bundle, so prod
+    // errors are debuggable while source isn't leaked to the public bundle.
+    sourcemap: 'hidden',
 
     rollupOptions: {
       output: {

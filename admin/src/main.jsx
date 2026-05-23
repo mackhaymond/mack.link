@@ -6,6 +6,7 @@ import { createBrowserRouter, RouterProvider } from 'react-router-dom'
 import { AuthCallback } from './components/AuthCallback.jsx'
 import { LoginScreen } from './components/LoginScreen.jsx'
 import { QueryProvider } from './providers/QueryProvider.jsx'
+import { ErrorBoundary } from './components/ui/ErrorBoundary.jsx'
 
 import { ThemeProvider } from './providers/ThemeProvider.jsx'
 
@@ -35,12 +36,16 @@ const router = createBrowserRouter(
   }
 )
 
+// M13: top-level ErrorBoundary wraps the entire app (above the router) so
+// errors thrown during route mount / providers are still recoverable.
 createRoot(document.getElementById('root')).render(
   <StrictMode>
-    <QueryProvider>
-      <ThemeProvider>
-        <RouterProvider router={router} />
-      </ThemeProvider>
-    </QueryProvider>
+    <ErrorBoundary fallbackMessage="The admin panel hit an unexpected error. Refreshing usually fixes it.">
+      <QueryProvider>
+        <ThemeProvider>
+          <RouterProvider router={router} />
+        </ThemeProvider>
+      </QueryProvider>
+    </ErrorBoundary>
   </StrictMode>
 )

@@ -1,7 +1,8 @@
-import { useState, useCallback, useRef, useEffect } from 'react'
-import { X } from 'lucide-react'
+import { useState, useCallback, useRef, useEffect, useMemo } from 'react'
+import { X, Eye, EyeOff } from 'lucide-react'
 import { Button, Input } from './ui'
 import { useReservedPaths, isShortcodeReserved, getReservedShortcodeError } from '../hooks/useReservedPaths'
+import { useModalA11y } from '../hooks/useModalA11y'
 
 export function CreateLinkForm({ onSubmit, onClose }) {
   const [formData, setFormData] = useState({
@@ -18,8 +19,20 @@ export function CreateLinkForm({ onSubmit, onClose }) {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
   const [fieldErrors, setFieldErrors] = useState({})
+  const [showPassword, setShowPassword] = useState(false)
   const shortcodeRef = useRef(null)
   const { reservedPaths, loading: reservedPathsLoading } = useReservedPaths()
+
+  // H11: dirty if anything has been entered or toggled away from defaults.
+  const isDirty = useMemo(() => {
+    return Boolean(
+      formData.shortcode || formData.url || formData.description ||
+      formData.tags.length > 0 || formData.activatesAt || formData.expiresAt ||
+      formData.password || formData.passwordProtectionEnabled,
+    )
+  }, [formData])
+
+  const { containerRef, requestClose } = useModalA11y({ onClose, isDirty })
 
   useEffect(() => {
     shortcodeRef.current?.focus()
@@ -139,14 +152,24 @@ export function CreateLinkForm({ onSubmit, onClose }) {
   )
 
   return (
-    <div className="fixed inset-0 bg-black/20 dark:bg-black/30 backdrop-blur-sm backdrop-saturate-150 z-50 transition duration-200 ease-out flex items-start sm:items-center justify-center p-0 sm:p-4">
-      <div className="mx-auto w-screen sm:w-full h-[100svh] sm:h-auto max-w-none sm:max-w-2xl border border-gray-200 dark:border-gray-700 shadow-lg rounded-none sm:rounded-md bg-white dark:bg-gray-800 transition-colors p-4 sm:p-6 overflow-y-auto">
+    <div
+      className="fixed inset-0 bg-black/20 dark:bg-black/30 backdrop-blur-sm backdrop-saturate-150 z-50 transition duration-200 ease-out flex items-start sm:items-center justify-center p-0 sm:p-4"
+      onClick={(e) => { if (e.target === e.currentTarget) requestClose() }}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="create-link-title"
+    >
+      <div
+        ref={containerRef}
+        className="mx-auto w-screen sm:w-full h-[100svh] sm:h-auto max-w-none sm:max-w-2xl border border-gray-200 dark:border-gray-700 shadow-lg rounded-none sm:rounded-md bg-white dark:bg-gray-800 transition-colors p-4 sm:p-6 overflow-y-auto"
+        onClick={(e) => e.stopPropagation()}
+      >
         <div className="flex items-center justify-between mb-4 sm:mb-6 sticky top-0 bg-white/95 dark:bg-gray-800/95 backdrop-blur -mx-4 sm:mx-0 px-4 sm:px-0 py-3 sm:py-0 border-b border-gray-200 dark:border-gray-700 sm:border-0">
-          <h3 className="text-lg sm:text-xl font-medium text-gray-900 dark:text-white">Create New Link</h3>
+          <h3 id="create-link-title" className="text-lg sm:text-xl font-medium text-gray-900 dark:text-white">Create New Link</h3>
           <button 
-            onClick={onClose} 
+            onClick={requestClose}
             className="text-gray-400 hover:text-gray-600 p-1 rounded-md hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
-            aria-label="Close"
+            aria-label="Close create link form"
           >
             <X className="w-6 h-6" />
           </button>
@@ -362,16 +385,27 @@ export function CreateLinkForm({ onSubmit, onClose }) {
                   <label htmlFor="password" className="sr-only">
                     Password
                   </label>
-                  <input
-                    type="password"
-                    name="password"
-                    id="password"
-                    value={formData.password}
-                    onChange={handleChange}
-                    className="block w-full px-3 py-3 sm:py-2 border border-gray-300 dark:border-gray-600 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-base sm:text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400 transition-colors"
-                    placeholder="Enter password"
-                    autoComplete="new-password"
-                  />
+                  <div className="relative">
+                    <input
+                      type={showPassword ? 'text' : 'password'}
+                      name="password"
+                      id="password"
+                      value={formData.password}
+                      onChange={handleChange}
+                      className="block w-full pr-10 px-3 py-3 sm:py-2 border border-gray-300 dark:border-gray-600 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-base sm:text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400 transition-colors"
+                      placeholder="Enter password"
+                      autoComplete="new-password"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowPassword((v) => !v)}
+                      className="absolute inset-y-0 right-0 flex items-center pr-3 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
+                      aria-label={showPassword ? 'Hide password' : 'Show password'}
+                      aria-pressed={showPassword}
+                    >
+                      {showPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
+                    </button>
+                  </div>
                   {fieldErrors.password && (
                     <p className="mt-2 text-sm text-red-600">{fieldErrors.password}</p>
                   )}
@@ -430,7 +464,7 @@ export function CreateLinkForm({ onSubmit, onClose }) {
           <div className="md:col-span-2 flex flex-col sm:flex-row justify-end space-y-3 sm:space-y-0 sm:space-x-3 pt-4 sm:pt-6">
             <button
               type="button"
-              onClick={onClose}
+              onClick={requestClose}
               className="w-full sm:w-auto px-4 py-3 sm:py-2 text-base sm:text-sm font-medium text-gray-700 dark:text-gray-300 bg-gray-100 dark:bg-gray-600 hover:bg-gray-200 dark:hover:bg-gray-500 rounded-md focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500 dark:focus:ring-offset-gray-800 transition-colors"
             >
               Cancel

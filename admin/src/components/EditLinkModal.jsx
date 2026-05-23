@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useState } from 'react'
-import { X } from 'lucide-react'
+import { useMemo, useState } from 'react'
+import { X, Eye, EyeOff } from 'lucide-react'
 import { workerHost } from '../services/links'
+import { useModalA11y } from '../hooks/useModalA11y'
 
 export function EditLinkModal({ link, onSave, onClose }) {
   // Helper to convert ISO -> value accepted by <input type="datetime-local">
@@ -32,15 +33,7 @@ export function EditLinkModal({ link, onSave, onClose }) {
   const [formData, setFormData] = useState(initial)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
-
-  // Close on Escape
-  useEffect(() => {
-    const onKey = (e) => {
-      if (e.key === 'Escape') onClose?.()
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [onClose])
+  const [showPassword, setShowPassword] = useState(false)
 
   // Detect dirty state to disable save if nothing changed
   const isDirty = useMemo(() => {
@@ -74,6 +67,10 @@ export function EditLinkModal({ link, onSave, onClose }) {
       : true
     return !(sameScalars && sameTags && passwordRelevant)
   }, [initial, formData])
+
+  // H11: focus trap + Esc + dirty confirm. Replaces the bare Esc listener
+  // and unguarded backdrop click.
+  const { containerRef, requestClose } = useModalA11y({ onClose, isDirty })
 
   const handleSubmit = async (e) => {
     e.preventDefault()
@@ -124,21 +121,22 @@ export function EditLinkModal({ link, onSave, onClose }) {
   return (
     <div
       className="fixed inset-0 bg-black/30 dark:bg-black/40 backdrop-blur-sm backdrop-saturate-150 z-50 transition duration-200 ease-out flex items-start sm:items-center justify-center p-0 sm:p-4"
-      onClick={onClose}
+      onClick={(e) => { if (e.target === e.currentTarget) requestClose() }}
       role="dialog"
       aria-modal="true"
       aria-labelledby="edit-link-title"
     >
       <div
+        ref={containerRef}
         className="mx-auto w-screen sm:w-full h-[100svh] sm:h-auto max-w-none sm:max-w-2xl p-4 sm:p-6 border border-gray-200 dark:border-gray-700 shadow-lg rounded-none sm:rounded-md bg-white dark:bg-gray-800 transition-colors overflow-y-auto"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between mb-4 sticky top-0 bg-white/95 dark:bg-gray-800/95 backdrop-blur -mx-4 sm:mx-0 px-4 sm:px-0 py-3 sm:py-0 border-b border-gray-200 dark:border-gray-700 sm:border-0">
           <h3 id="edit-link-title" className="text-lg font-medium text-gray-900 dark:text-white">Edit Link</h3>
           <button
-            onClick={onClose}
+            onClick={requestClose}
             className="text-gray-400 hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300 transition-colors"
-            aria-label="Close"
+            aria-label="Close edit link dialog"
           >
             <X className="w-6 h-6" />
           </button>
@@ -334,12 +332,12 @@ export function EditLinkModal({ link, onSave, onClose }) {
                   </label>
                   <div className="relative">
                     <input
-                      type="password"
+                      type={showPassword ? 'text' : 'password'}
                       name="password"
                       id="password"
                       value={formData.password}
                       onChange={handleChange}
-                      className="block w-full px-3 py-3 sm:py-2 border border-gray-300 dark:border-gray-600 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400 transition-colors"
+                      className={`block w-full px-3 py-3 sm:py-2 border border-gray-300 dark:border-gray-600 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400 transition-colors ${link.passwordEnabled ? 'pr-40' : 'pr-10'}`}
                       autoCapitalize="off"
                       autoCorrect="off"
                       spellCheck={false}
@@ -349,8 +347,17 @@ export function EditLinkModal({ link, onSave, onClose }) {
                           : 'Enter password'
                       }
                     />
+                    <button
+                      type="button"
+                      onClick={() => setShowPassword((v) => !v)}
+                      className="absolute inset-y-0 right-0 flex items-center pr-3 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
+                      aria-label={showPassword ? 'Hide password' : 'Show password'}
+                      aria-pressed={showPassword}
+                    >
+                      {showPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
+                    </button>
                     {link.passwordEnabled && (
-                      <div className="absolute inset-y-0 right-0 pr-3 flex items-center">
+                      <div className="absolute inset-y-0 right-10 pr-3 flex items-center pointer-events-none">
                         <span className="text-xs text-gray-500 dark:text-gray-400 bg-gray-100 dark:bg-gray-600 px-2 py-1 rounded">
                           Currently Protected
                         </span>
@@ -414,7 +421,7 @@ export function EditLinkModal({ link, onSave, onClose }) {
           <div className="md:col-span-2 flex justify-end space-x-3 pt-4">
             <button
               type="button"
-              onClick={onClose}
+              onClick={requestClose}
               className="px-4 py-3 sm:py-2 text-sm font-medium text-gray-700 dark:text-gray-300 bg-gray-100 dark:bg-gray-600 hover:bg-gray-200 dark:hover:bg-gray-500 rounded-md focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500 dark:focus:ring-offset-gray-800 transition-colors"
             >
               Cancel
