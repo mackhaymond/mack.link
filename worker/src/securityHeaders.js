@@ -17,11 +17,12 @@ function commonHeaders(isLocalHost) {
 }
 
 /**
- * CSP for HTML responses. Allows 'unsafe-inline' for script + style because
- * the password-prompt template inlines both. A future refactor could move
- * those to hashed/served assets and tighten script-src to 'self' + nonce.
+ * Default CSP for HTML responses we don't own (admin SPA served via
+ * Cloudflare Static Assets). Keeps 'unsafe-inline' for script + style
+ * because the Vite-built admin bundle inlines a small bootstrap and we
+ * can't reach into the SPA build to inject per-request nonces.
  */
-const CSP_HTML =
+const CSP_HTML_DEFAULT =
 	"default-src 'self'; " +
 	"img-src 'self' data: https:; " +
 	"style-src 'self' 'unsafe-inline'; " +
@@ -32,9 +33,52 @@ const CSP_HTML =
 	"form-action 'self'";
 
 /**
- * Wrap a Response with standard security headers.
- * For HTML responses (admin SPA, password prompt, redirect error pages) it
- * also adds Content-Security-Policy. Idempotent - re-applying is harmless.
+ * B3 (Sprint 2b): Generate a per-request CSP nonce. 128 bits of entropy
+ * from `crypto.randomUUID()` with hyphens stripped — sufficient for
+ * "unguessable by network attacker within the request lifetime" per the
+ * CSP3 nonce requirements.
+ */
+export function generateCspNonce() {
+	return crypto.randomUUID().replace(/-/g, '');
+}
+
+/**
+ * B3 (Sprint 2b): CSP for HTML responses where the Worker rendered the
+ * markup itself (password prompt, redirect error pages, marketing
+ * homepage). Drops `'unsafe-inline'` from style-src and script-src in
+ * favor of an explicit nonce on each inline `<style>` / `<script>` tag.
+ * Browsers will refuse to execute/apply any inline content WITHOUT a
+ * matching nonce, closing one XSS surface.
+ *
+ * The Worker generates a fresh nonce per request and threads it into
+ * the render function AND this header builder. The two values MUST
+ * match — that's what makes the nonce protection meaningful.
+ */
+export function htmlCspWithNonce(nonce) {
+	return (
+		"default-src 'self'; " +
+		"img-src 'self' data: https:; " +
+		`style-src 'self' 'nonce-${nonce}'; ` +
+		`script-src 'self' 'nonce-${nonce}'; ` +
+		"connect-src 'self'; " +
+		"frame-ancestors 'none'; " +
+		"base-uri 'self'; " +
+		"form-action 'self'"
+	);
+}
+
+/**
+ * Wrap a Response with standard security headers. For HTML responses
+ * (admin SPA, password prompt, redirect error pages) it also adds a
+ * default Content-Security-Policy IF the response doesn't already have
+ * one set.
+ *
+ * B3 (Sprint 2b): the "doesn't already have one" condition lets
+ * Worker-rendered HTML routes (password prompt, redirect errors,
+ * homepage) opt into a tightened nonce-based CSP by setting their own
+ * Content-Security-Policy header on the response. This function then
+ * leaves that custom CSP untouched and only adds the common headers
+ * (HSTS, nosniff, X-Frame-Options, etc.). Idempotent.
  */
 export function withSecurityHeaders(env, request, response) {
 	const url = new URL(request.url);
@@ -42,8 +86,8 @@ export function withSecurityHeaders(env, request, response) {
 	const headers = commonHeaders(isLocalHost);
 
 	const contentType = response.headers.get('Content-Type') || '';
-	if (contentType.includes('text/html')) {
-		headers['Content-Security-Policy'] = CSP_HTML;
+	if (contentType.includes('text/html') && !response.headers.get('Content-Security-Policy')) {
+		headers['Content-Security-Policy'] = CSP_HTML_DEFAULT;
 	}
 
 	const merged = new Response(response.body, response);
@@ -51,4 +95,4 @@ export function withSecurityHeaders(env, request, response) {
 	return merged;
 }
 
-export { CSP_HTML };
+export { CSP_HTML_DEFAULT };

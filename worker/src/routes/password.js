@@ -218,9 +218,15 @@ export async function verifyPasswordSession(env, shortcode, sessionToken) {
 }
 
 /**
- * Render password prompt page
+ * Render the password prompt page.
+ *
+ * B3 (Sprint 2b): `nonce` is REQUIRED. The inline `<style>` and `<script>`
+ * blocks each get `nonce="${nonce}"` so the nonce-based CSP set by the
+ * caller (via `htmlCspWithNonce(nonce)`) accepts them. Callers MUST pass
+ * the same nonce to both this function AND `htmlCspWithNonce` on the
+ * response — mismatched nonces yield blank pages in the browser.
  */
-export function renderPasswordPrompt(shortcode, error = null) {
+export function renderPasswordPrompt(shortcode, error, nonce) {
 	const errorHtml = error ? `<div class="error">${escapeHtml(error)}</div>` : '';
 
 	return `<!DOCTYPE html>
@@ -229,7 +235,7 @@ export function renderPasswordPrompt(shortcode, error = null) {
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Password Required • link.mackhaymond.co</title>
-  <style>
+  <style nonce="${nonce}">
     :root{--bg:#0b1220;--panel:rgba(17,24,39,.85);--muted:#9aa4b2;--text:#eef2f7;--accent:#2563eb;--accent-2:#60a5fa;--ring:rgba(96,165,250,.25);--error:#ef4444}
     *{box-sizing:border-box}
     body{margin:0;background:
@@ -280,7 +286,7 @@ export function renderPasswordPrompt(shortcode, error = null) {
     </div>
   </div>
 
-  <script>
+  <script nonce="${nonce}">
     document.getElementById('passwordForm').addEventListener('submit', async (e) => {
       e.preventDefault();
 

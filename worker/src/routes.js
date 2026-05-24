@@ -4,6 +4,7 @@ import { handleAPI } from './routes/routerApi.js';
 import { handleAdmin } from './routes/admin.js';
 import { authenticateRequest } from './auth.js';
 import { logger } from './logger.js';
+import { generateCspNonce, htmlCspWithNonce } from './securityHeaders.js';
 
 export async function handleRequest(request, env, requestLogger, ctx) {
 	const url = new URL(request.url);
@@ -41,7 +42,18 @@ export async function handleRequest(request, env, requestLogger, ctx) {
 
 	const redirectResponse = await handleRedirect(request, env, requestLogger, ctx);
 	if (redirectResponse) return redirectResponse;
-	return withCors(env, new Response(renderHomeHtml(), { headers: { 'Content-Type': 'text/html; charset=utf-8' } }), request);
+	// B3 (Sprint 2b): nonce-based CSP for the marketing homepage.
+	const nonce = generateCspNonce();
+	return withCors(
+		env,
+		new Response(renderHomeHtml(nonce), {
+			headers: {
+				'Content-Type': 'text/html; charset=utf-8',
+				'Content-Security-Policy': htmlCspWithNonce(nonce),
+			},
+		}),
+		request,
+	);
 }
 
 /**
@@ -98,14 +110,14 @@ async function handleAPIWithSession(request, env, requestLogger) {
 	return response;
 }
 
-function renderHomeHtml() {
+function renderHomeHtml(nonce) {
 	return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>link.mackhaymond.co • Fast personal short links</title>
-  <style>
+  <style nonce="${nonce}">
     :root{--bg:#0b1220;--muted:#9aa4b2;--text:#eef2f7;--ring:rgba(96,165,250,.25)}
     *{box-sizing:border-box}
     body{margin:0;background:
