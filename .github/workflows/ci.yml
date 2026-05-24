@@ -148,12 +148,6 @@ jobs:
           workingDirectory: worker
           command: deploy --env staging
           wranglerVersion: ${{ env.WRANGLER_VERSION }}
-        env:
-          # Staging runs in AUTH_DISABLED=true mode (see env.staging.vars in
-          # wrangler.jsonc) so a real OAuth client is not required. JWT_SECRET
-          # must still be present for cookie signing; reuse the prod secret
-          # rather than minting a separate staging one to keep secret sprawl low.
-          JWT_SECRET: ${{ secrets.JWT_SECRET }}
 
       - name: Smoke test staging
         if: steps.check.outputs.skip != 'true' && steps.check_subdomain.outputs.skip != 'true'

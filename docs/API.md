@@ -14,20 +14,33 @@ https://YOUR_DOMAIN.com
 
 ## 🔐 Authentication
 
-Mack.link uses **GitHub OAuth** for authentication with secure session cookies:
+Authentication is handled by **Cloudflare Access** at the edge. The Worker
+verifies the `Cf-Access-Jwt-Assertion` header that Access injects on
+proxied requests; it doesn't issue its own session cookies or run an
+OAuth flow.
 
-### For Web Applications (Recommended)
-The admin interface uses HttpOnly session cookies automatically. No manual token handling required.
+For the full path-coverage table (which paths Access protects vs.
+bypasses, the dev-bypass model, and the JWT verification logic), see
+[SECURITY.md](../SECURITY.md).
 
-### For API Access (Legacy)
-You can still use GitHub personal access tokens for direct API access:
+For browser-facing flows: the admin SPA reads identity from
+`/cdn-cgi/access/get-identity` after Access logs the user in. No
+session cookie handling is required in the client.
+
+For automated API access: you need a Cloudflare Access **service token**
+(client ID + client secret) issued from the Zero Trust dashboard. Pass
+them as `CF-Access-Client-Id` and `CF-Access-Client-Secret` headers:
 
 ```bash
-curl -H "Authorization: Bearer your_github_token" \
-     https://YOUR_DOMAIN.com/api/links
+curl -H "CF-Access-Client-Id: $CF_ACCESS_CLIENT_ID" \
+     -H "CF-Access-Client-Secret: $CF_ACCESS_CLIENT_SECRET" \
+     https://link.mackhaymond.co/api/links
 ```
 
-> ⚠️ **Security Note**: Session cookies are more secure as tokens never leave the server.
+The Worker's previous GitHub OAuth flow (`GET /api/auth/github`,
+`GET /admin/auth/callback`) was removed in Sprint 2a. The only
+auth-related endpoint left is `POST /api/auth/logout`, which returns
+the Cloudflare Access logout URL for the SPA to navigate to.
 
 ---
 
@@ -77,64 +90,27 @@ Submit password for protected links.
 
 ## 🔑 Authentication Endpoints
 
-### GitHub OAuth Flow
-
-#### `GET /api/auth/github`
-
-Starts the GitHub OAuth authentication process.
-
-**Query Parameters:**
-- `redirect_uri` (optional) - Where to redirect after OAuth completion
-
-**Response:**
-- `302` - Redirects to GitHub OAuth page
-
-**Example:**
-```bash
-curl "https://YOUR_DOMAIN.com/api/auth/github"
-# Redirects to GitHub for authorization
-```
-
-#### `GET /admin/auth/callback`
-
-Handles the OAuth callback from GitHub (automatic).
-
-**Query Parameters:**
-- `code` - OAuth authorization code (provided by GitHub)
-- `state` - OAuth state parameter
-
-**Success Response:**
-```json
-{
-  "user": {
-    "login": "your-username",
-    "avatar_url": "https://avatars.githubusercontent.com/u/123456",
-    "id": 123456,
-    "name": "Your Name"
-  }
-}
-```
-
-**Error Response:**
-```json
-{
-  "error": "access_denied",
-  "error_description": "Only authorized users can access this service."
-}
-```
-
 #### `POST /api/auth/logout`
 
-Sign out and clear the session cookie.
+Returns the Cloudflare Access logout URL. The admin SPA navigates to
+this URL to clear the `CF_Authorization` cookie and bounce the user
+back to the Access login page.
 
 **Response:**
-- `200` - Successfully logged out
+```json
+{
+  "logout": "https://YOUR-TEAM.cloudflareaccess.com/cdn-cgi/access/logout"
+}
+```
 
 ---
 
 ## 🔐 Protected API Endpoints
 
-All endpoints below require authentication via session cookie or GitHub token.
+All endpoints below require a valid Cloudflare Access JWT (verified by the
+Worker via `Cf-Access-Jwt-Assertion`) or a valid Access service token
+(`CF-Access-Client-Id` + `CF-Access-Client-Secret`). See the
+Authentication section above.
 
 ### Link Management
 
@@ -433,9 +409,10 @@ interface Link {
 ### User Object
 ```typescript
 interface User {
-  login: string;                  // GitHub username
-  id: number;                     // GitHub user ID
-  avatar_url: string;             // Profile picture URL
+  login: string;                  // Email address (full) — post-Sprint-2b
+  email: string;                  // Same as login
+  id: string;                     // Cloudflare Access subject claim (`sub`)
+  avatar_url: string;             // Profile picture URL (may be empty)
   name?: string;                  // Display name
 }
 ```
