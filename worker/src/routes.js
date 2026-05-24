@@ -3,6 +3,7 @@ import { handleRedirect } from './routes/redirect.js';
 import { handleAPI } from './routes/routerApi.js';
 import { handleAdmin } from './routes/admin.js';
 import { authenticateRequest } from './auth.js';
+import { logger } from './logger.js';
 
 export async function handleRequest(request, env, requestLogger, ctx) {
 	const url = new URL(request.url);
@@ -12,7 +13,7 @@ export async function handleRequest(request, env, requestLogger, ctx) {
 	}
 
 	if (url.pathname.startsWith('/api/')) {
-		return await handleAPI(request, env, requestLogger);
+		return await handleAPIWithSession(request, env, requestLogger);
 	}
 
 	// Handle admin panel routes
@@ -41,6 +42,60 @@ export async function handleRequest(request, env, requestLogger, ctx) {
 	const redirectResponse = await handleRedirect(request, env, requestLogger, ctx);
 	if (redirectResponse) return redirectResponse;
 	return withCors(env, new Response(renderHomeHtml(), { headers: { 'Content-Type': 'text/html; charset=utf-8' } }), request);
+}
+
+/**
+ * B2 (Sprint 2b): wrap /api/* requests in a D1 Sessions API session so that
+ * read replicas serve sequentially-consistent results. The contract:
+ *
+ *   1. Read the `x-d1-bookmark` request header (admin client passes the
+ *      bookmark from its prior response, if any).
+ *   2. Create a session via `env.DB.withSession(bookmark)`. The bookmark
+ *      sentinel `'first-unconstrained'` lets the first read hit any
+ *      replica — appropriate for first-load when no prior writes exist.
+ *   3. Hand handlers an env whose `.DB` is the session, not the raw
+ *      D1Database. This is API-compatible (`session.prepare/.batch/.first`
+ *      match D1Database) so existing db.js helpers don't change.
+ *   4. After the handler returns, attach `x-d1-bookmark` to the response
+ *      so the client can pass it back next time and keep read-your-writes
+ *      consistency across requests.
+ *
+ * Scope: API only. Hot-path (redirect.js, analytics writes) intentionally
+ * stays on raw `env.DB` because those paths are already eventually
+ * consistent by design and adding session bookkeeping would just add
+ * pointless latency.
+ *
+ * Works fine even when read replication is OFF (the dashboard toggle
+ * hasn't been flipped yet): `withSession` returns a session that always
+ * targets the primary, and `getBookmark()` returns the primary's bookmark.
+ * Code is identical either way — enabling replication is purely a runtime
+ * dashboard switch.
+ *
+ * Failure modes:
+ *   - If `env.DB` is missing (tests without DB binding), fall back to the
+ *     raw env so handlers can still return their own errors.
+ *   - If `getBookmark()` throws (no queries executed in the session),
+ *     silently skip the response header.
+ */
+async function handleAPIWithSession(request, env, requestLogger) {
+	if (!env?.DB || typeof env.DB.withSession !== 'function') {
+		return await handleAPI(request, env, requestLogger);
+	}
+	const bookmark = request.headers.get('x-d1-bookmark') || 'first-unconstrained';
+	const session = env.DB.withSession(bookmark);
+	const sessionEnv = { ...env, DB: session };
+	const response = await handleAPI(request, sessionEnv, requestLogger);
+	try {
+		const bm = session.getBookmark();
+		if (bm) {
+			const cloned = new Response(response.body, response);
+			cloned.headers.set('x-d1-bookmark', bm);
+			return cloned;
+		}
+	} catch (err) {
+		logger.warn('d1_session_bookmark_failed', { error: err?.message });
+	}
+	return response;
 }
 
 function renderHomeHtml() {
