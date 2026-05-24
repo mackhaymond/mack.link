@@ -22,21 +22,25 @@ miniflare, ws via miniflare) **do not affect deployed code**.
 ## Currently accepted dev-only advisories
 
 The following advisories cannot be auto-resolved without a major version
-bump of `@cloudflare/vitest-pool-workers` that drops the
+bump of `@cloudflare/vitest-pool-workers` to 0.13+ that drops the
 `defineWorkersProject` config helper and requires a non-trivial test-runner
-migration. We pin to the current stable line and accept the risk because the
-affected packages **never execute in production**.
+migration. We track the latest patch line that keeps the `./config` export
+(currently `0.12.21`) and accept the risk because the affected packages
+**never execute in production**.
 
 | Package | Severity | Advisory | Notes |
 |---|---|---|---|
-| `wrangler@^4.33.2` | High | [GHSA-36p8-mvp6-cv38](https://github.com/advisories/GHSA-36p8-mvp6-cv38) | OS command injection in `wrangler pages deploy`; we don't use Pages. Workers `deploy` is not affected. |
-| `miniflare` (transitive via wrangler / vitest-pool-workers) | Moderate | via undici, ws | Dev/test-time HTTP/WebSocket server |
+| `wrangler@4.72.0` (transitive via vitest-pool-workers) | High | [GHSA-36p8-mvp6-cv38](https://github.com/advisories/GHSA-36p8-mvp6-cv38) | OS command injection in `wrangler pages deploy`; we don't use Pages. Workers `deploy` is not affected. The top-level direct `wrangler@4.94.0` is past the fix range. |
+| `miniflare@4.20260310.0` (transitive) | Moderate | via undici, ws | Dev/test-time HTTP/WebSocket server |
 | `undici@<7.24.0` (transitive) | High | [GHSA-f269-vfmq-vjvj](https://github.com/advisories/GHSA-f269-vfmq-vjvj), [GHSA-vrm6-8vpv-qv8q](https://github.com/advisories/GHSA-vrm6-8vpv-qv8q), [GHSA-v9p9-hfj2-hcw8](https://github.com/advisories/GHSA-v9p9-hfj2-hcw8) | WebSocket DoS in HTTP client; only invoked by Miniflare's local dev server |
 | `ws@8.0.0–8.20.0` (transitive) | Moderate | [GHSA-58qx-3vcg-4xpx](https://github.com/advisories/GHSA-58qx-3vcg-4xpx) | Uninitialized memory disclosure; only used inside Miniflare locally |
 
 Tracking: revisit when `@cloudflare/vitest-pool-workers` ships a release
-that preserves backwards compatibility for `defineWorkersProject` or provides
-a clear migration path.
+that preserves backwards compatibility for `defineWorkersProject` or
+provides a clean migration path. The `worker/wrangler.jsonc`
+`compatibility_date` is intentionally pinned to a value supported by the
+bundled `workerd` (currently `2026-03-10`) so local tests don't fall back
+silently. Bump together.
 
 ## Production security controls (worker)
 

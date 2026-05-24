@@ -6,7 +6,10 @@
 	"$schema": "node_modules/wrangler/config-schema.json",
 	"name": "worker",
 	"main": "src/index.js",
-	"compatibility_date": "2026-05-23",
+	// Bump alongside @cloudflare/vitest-pool-workers + wrangler upgrades so
+	// local Miniflare doesn't fall back to its bundled workerd date.
+	// vitest-pool-workers@0.12.21 ships workerd@1.20260310.x.
+	"compatibility_date": "2026-03-10",
 	"observability": {
 		"enabled": true,
 		"head_sampling_rate": 0.1

@@ -115,7 +115,7 @@ describe('Multi-tenancy IDOR (C6)', () => {
 		expect(rows.length).toBe(1);
 	});
 
-	it('bulkDeleteLinks only deletes the requester\u2019s links', async () => {
+	it("bulkDeleteLinks only deletes the requester's links", async () => {
 		await seedUser('gh:alice', 'alice');
 		await seedUser('gh:bob', 'bob');
 		await seedLink('alice-1', 'gh:alice');
