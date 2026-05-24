@@ -17,6 +17,7 @@ This file provides guidance to WARP (warp.dev) when working with code in this re
 - Database:
   - Apply schema (local): `npm run db:apply:local`
   - Apply schema (prod): `npm run db:apply:prod`
+  - Apply schema (staging, S3): `D1_DATABASE_NAME=mack-link-staging npm -w worker run db:apply` — the JS migration runner reads `D1_DATABASE_NAME` (default `mack-link`) so the same script owns prod + staging without forking.
   - Reconcile analytics (local|prod): `npm run db:reconcile:analytics:local` | `npm run db:reconcile:analytics:prod`
   - One-off query: `npm run db:q:local --sql="SELECT COUNT(*) FROM links;"` (or `db:q:prod`)
 - Logs (long-running):
@@ -289,10 +290,11 @@ Note: The admin UI is served from the same origin at `/admin`, so a dedicated `M
 
 ## Deployment Notes
 
-- Worker deploys via `wrangler deploy` to Cloudflare Workers
-- Management panel is embedded and served by the Worker at `/admin`
-- D1 database migrations handled through Wrangler CLI
-- Environment variables must be set in Cloudflare Dashboard for production
+- Production deploy: `wrangler deploy` to the prod Worker (`mack.link.workers.dev` + custom domain).
+- PR previews (S3): every PR auto-deploys to the staging Worker (`worker-staging.<CF_WORKERS_SUBDOMAIN>.workers.dev`) via the `preview` CI job. Staging runs in `AUTH_DISABLED=true` mode so reviewers can test without GitHub OAuth. Setup steps (one-time, by the repo owner) are documented in `docs/GITHUB_SECRETS.md`.
+- The admin panel is served by Cloudflare's Static Assets binding (S1) from `admin/dist/` rather than being embedded in the Worker JS.
+- D1 schema migrations: the JS runner (`worker/scripts/migrate.mjs`) supports prod and staging via the `D1_DATABASE_NAME` env var.
+- Environment variables for production must be set in Cloudflare Dashboard (or via `wrangler secret put` for sensitive ones).
 
 ## Analytics Monitoring
 
