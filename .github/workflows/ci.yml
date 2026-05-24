@@ -89,14 +89,12 @@ jobs:
           EOL
           npm run build
 
-      - name: Apply D1 migrations
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          workingDirectory: worker
-          command: d1 migrations list mack-link --remote
-          wranglerVersion: ${{ env.WRANGLER_VERSION }}
+      # D1 schema changes are applied out-of-band: run `npm run db:apply:prod`
+      # locally before merging. The repo uses a custom JS runner (handles
+      # SQLite ALTER idempotency + a bespoke `migrations` table) instead of
+      # wrangler's built-in d1 migrations, so a `wrangler d1 migrations`
+      # step here would fail (different folder layout, different tracking
+      # table) and block deploys for no real safety win.
 
       - name: Deploy with Wrangler
         uses: cloudflare/wrangler-action@v3
