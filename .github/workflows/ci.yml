@@ -95,7 +95,13 @@ jobs:
         id: check
         shell: bash
         run: |
-          if grep -q "REPLACE_ME_AFTER_wrangler_d1_create" worker/wrangler.jsonc; then
+          # Anchor the grep to the JSON-value form (`"REPLACE_ME_AFTER_..."`)
+          # so the bare-word mention of the placeholder in the wrangler.jsonc
+          # comment block (line ~117, the comment that documents this guard
+          # itself) doesn't trip the check. Without the quotes, the guard
+          # always-skipped — the preview pipeline never actually deployed
+          # since Sprint 1 shipped.
+          if grep -qE '"REPLACE_ME_AFTER_wrangler_d1_create"' worker/wrangler.jsonc; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
             echo "::warning::Staging D1 not yet created. Run \`wrangler d1 create mack-link-staging\` and paste the database_id into worker/wrangler.jsonc env.staging.d1_databases[0].database_id to enable PR preview deploys."
           else
