@@ -1,179 +1,96 @@
-const API_BASE = import.meta.env.VITE_API_BASE || ''
+// Cloudflare Access-aware auth service.
+//
+// Sprint 2a (A3): the SPA no longer runs OAuth. Cloudflare Access has
+// already authenticated the user before they ever reach this React app -
+// the worker just verifies the Cf-Access-Jwt-Assertion header on API
+// requests. The SPA reads identity from `/cdn-cgi/access/get-identity`
+// (handled by Cloudflare directly, not by the worker).
+//
+// In `npm run dev:ai` mode (VITE_AUTH_DISABLED=true), Access doesn't
+// intercept localhost - we return a hardcoded mock identity so the
+// admin UI renders without round-tripping anywhere.
 
-class AuthService {
-  constructor() {
-    this.token = null // no longer used client-side
-    this.user = JSON.parse(localStorage.getItem('user') || 'null')
-    window.addEventListener('storage', (e) => {
-      if (e.key === 'user') {
-        const userRaw = localStorage.getItem('user')
-        this.user = userRaw ? JSON.parse(userRaw) : null
-        const event = new CustomEvent('auth:change', {
-          detail: { token: this.token, user: this.user },
-        })
-        window.dispatchEvent(event)
-      }
-    })
+const STORAGE_KEY = 'mack-link.user';
+const DEV_MODE = typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_AUTH_DISABLED === 'true';
+const DEV_USER = { login: 'ai-dev', email: 'ai-dev@localhost', name: 'AI Developer', avatar_url: '' };
 
-    // Zero-click dev auth: when VITE_AUTH_DISABLED=true, auto-fetch user from the Worker
-    // This avoids any cookie requirements and works even when third-party cookies are blocked
-    this.bootstrapDevAuthIfNeeded()
-  }
+let cachedUser = null;
+let inflight = null;
 
-  isAuthenticated() {
-    return !!this.user
-  }
-
-  getToken() {
-    return this.token
-  }
-
-  getUser() {
-    return this.user
-  }
-
-  async bootstrapDevAuthIfNeeded() {
-    try {
-      const dev = import.meta?.env?.VITE_AUTH_DISABLED === 'true'
-      if (!dev || this.user) return
-      const base = API_BASE || window.location.origin
-      const resp = await fetch(new URL('/api/user', base).toString(), {
-        credentials: 'include',
-        headers: { 'x-dev-auth': '1' },
-      })
-      if (resp.ok) {
-        const data = await resp.json()
-        this.user = data?.user || data
-        if (this.user) {
-          localStorage.setItem('user', JSON.stringify(this.user))
-          const event = new CustomEvent('auth:change', { detail: { token: this.token, user: this.user } })
-          window.dispatchEvent(event)
-        }
-      }
-    } catch (e) {
-      // Non-fatal during dev startup
-      console.warn('Dev auto-auth bootstrap failed', e)
-    }
-  }
-
-  async login() {
-    const redirectUri = `${window.location.origin}/admin/auth/callback`
-    const base = API_BASE || window.location.origin
-    const dev = import.meta?.env?.VITE_AUTH_DISABLED === 'true'
-
-    if (dev) {
-      // Prefer cookie-less dev auth via /api/user (Worker returns mock user when AUTH_DISABLED=true)
-      try {
-        const respUser = await fetch(new URL('/api/user', base).toString(), {
-          credentials: 'include',
-          headers: { 'x-dev-auth': '1' },
-        })
-        if (respUser.ok) {
-          const json = await respUser.json()
-          this.user = json?.user || json
-          if (this.user) {
-            localStorage.setItem('user', JSON.stringify(this.user))
-            const event = new CustomEvent('auth:change', { detail: { token: this.token, user: this.user } })
-            window.dispatchEvent(event)
-            // Navigate to app root after login
-            window.location.assign('/admin')
-            return
-          }
-        }
-      } catch (e) {
-        console.warn('Dev /api/user fetch failed, trying legacy dev login', e)
-      }
-
-      // Legacy: programmatic login endpoint (sets cookie). May fail if cookies blocked.
-      try {
-        const resp = await fetch(new URL('/api/auth/dev/login', base).toString(), {
-          method: 'POST',
-          credentials: 'include',
-          headers: { 'Content-Type': 'application/json', 'x-dev-auth': '1' },
-          body: JSON.stringify({}),
-        })
-        if (resp.ok) {
-          const data = await resp.json()
-          this.user = data.user
-          localStorage.setItem('user', JSON.stringify(this.user))
-          const event = new CustomEvent('auth:change', { detail: { token: this.token, user: this.user } })
-          window.dispatchEvent(event)
-          // Navigate to app root after login
-          window.location.assign('/admin')
-          return
-        }
-      } catch (e) {
-        console.warn('Dev legacy login failed, falling back to OAuth redirect', e)
-      }
-    }
-
-    // Fallback to GitHub OAuth
-    const auth = new URL('/api/auth/github', base)
-    auth.searchParams.set('redirect_uri', redirectUri)
-    window.location.href = auth.toString()
-  }
-
-  async handleCallback(code, state) {
-    try {
-      // Complete OAuth on the Worker origin in dev
-      const base = API_BASE || window.location.origin
-      const url = new URL('/api/auth/callback', base)
-      url.searchParams.set('code', code)
-      if (state) {
-        url.searchParams.set('state', state)
-      }
-
-      const response = await fetch(url.toString(), { credentials: 'include' })
-
-      if (!response.ok) {
-        throw new Error('Failed to authenticate')
-      }
-
-      const data = await response.json()
-
-      if (data.error === 'access_denied') {
-        throw new Error(
-          data.error_description || 'Access denied: You are not authorized to use this service'
-        )
-      }
-
-      this.user = data.user
-      localStorage.setItem('user', JSON.stringify(this.user))
-      const event = new CustomEvent('auth:change', {
-        detail: { token: this.token, user: this.user },
-      })
-      window.dispatchEvent(event)
-
-      return data
-    } catch (error) {
-      console.error('Authentication callback failed:', error)
-      throw error
-    }
-  }
-
-  logout() {
-    this.token = null
-    this.user = null
-    localStorage.removeItem('user')
-    const base = API_BASE || window.location.origin
-    // Always clear local state and notify listeners synchronously, then
-    // attempt the server logout. If the server call fails, log it and emit
-    // a separate 'auth:logout-failed' event so callers can surface a toast.
-    fetch(new URL('/api/auth/logout', base).toString(), {
-      method: 'POST',
-      credentials: 'include',
-      headers: import.meta?.env?.VITE_AUTH_DISABLED === 'true' ? { 'x-dev-auth': '1' } : {},
-    }).catch((err) => {
-      console.error('Logout request failed', err)
-      window.dispatchEvent(new CustomEvent('auth:logout-failed', { detail: { error: err?.message } }))
-    })
-    const event = new CustomEvent('auth:change', { detail: { token: null, user: null } })
-    window.dispatchEvent(event)
-  }
-
-  getAuthHeaders() {
-    return {}
+function readSessionStorage() {
+  try {
+    const raw = sessionStorage.getItem(STORAGE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
   }
 }
 
-export const authService = new AuthService()
+function writeSessionStorage(user) {
+  try {
+    if (user) sessionStorage.setItem(STORAGE_KEY, JSON.stringify(user));
+    else sessionStorage.removeItem(STORAGE_KEY);
+  } catch { /* sessionStorage may be unavailable (private mode, etc.) */ }
+}
+
+async function fetchIdentity() {
+  if (DEV_MODE) return DEV_USER;
+  try {
+    const r = await fetch('/cdn-cgi/access/get-identity', { credentials: 'include' });
+    if (!r.ok) return null;
+    const identity = await r.json();
+    const email = String(identity.email || '');
+    const login = email.includes('@') ? email.split('@')[0] : (identity.user_uuid || 'user');
+    return {
+      login,
+      email,
+      name: identity.name || email || login,
+      avatar_url: '',
+    };
+  } catch {
+    return null;
+  }
+}
+
+export const authService = {
+  // Synchronous accessor for components that already have a hydrated state
+  // (e.g. Header reads from a prop now, but keep this for compatibility
+  // with any future callsite that needs the last-known identity).
+  getUser() {
+    if (cachedUser) return cachedUser;
+    const fromStorage = readSessionStorage();
+    if (fromStorage) cachedUser = fromStorage;
+    return cachedUser;
+  },
+
+  // Async resolver: returns the current identity or null. De-duplicates
+  // concurrent calls (App + Header both mounting at the same tick).
+  async resolveUser() {
+    if (cachedUser) return cachedUser;
+    if (inflight) return inflight;
+    inflight = fetchIdentity().then((user) => {
+      cachedUser = user;
+      writeSessionStorage(user);
+      inflight = null;
+      return user;
+    });
+    return inflight;
+  },
+
+  isAuthenticated() {
+    return !!cachedUser;
+  },
+
+  logout() {
+    cachedUser = null;
+    writeSessionStorage(null);
+    // Cloudflare clears the Access session cookie and bounces the user
+    // back to the team login page. In dev mode this 404s harmlessly
+    // (Access isn't running locally) - reload to reset SPA state.
+    if (DEV_MODE) {
+      window.location.reload();
+      return;
+    }
+    window.location.href = '/cdn-cgi/access/logout';
+  },
+};
