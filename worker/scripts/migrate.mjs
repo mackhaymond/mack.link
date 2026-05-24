@@ -210,28 +210,46 @@ function maybeAddOwnerIdToLinks() {
  * to the post-Access email-based identity. See 006_owner_id_email.sql for
  * the full design rationale.
  *
- * Idempotent: skips with a log line if OWNER_EMAIL isn't set OR if the
- * old row doesn't exist (already migrated / fresh install).
+ * Two invocation modes:
+ *   1. OWNER_EMAIL=user@example.com
+ *        -> renames `gh:user` to `user@example.com`
+ *        -> the typical prod path
+ *   2. OLD_OWNER_ID=gh:ai-dev NEW_OWNER_ID=ai-dev
+ *        -> raw rename, no email validation
+ *        -> escape hatch for synthetic identities (local dev's mock
+ *           'ai-dev' user, test fixtures) or any non-email scheme
+ *
+ * Mode 1 also accepts OLD_OWNER_ID to override the `gh:<localpart>` guess
+ * when legacy data has a non-matching shape (e.g. `gh:mackhaymond` while
+ * the new email is mack.haymond@icloud.com).
+ *
+ * Idempotent: skips with a log line if no rename args are provided OR if
+ * the old row doesn't exist (already migrated / fresh install).
  *
  * Safe edge cases:
  *   - Target row already exists (partial prior migration): point links
  *     at the new row and delete the old user row instead of UPDATE on PK.
- *   - OLD_OWNER_ID env var overrides the default `gh:<localpart>` guess
- *     so existing prod data with a different legacy shape (e.g.
- *     `gh:mackhaymond` while OWNER_EMAIL=mack.haymond@icloud.com) can
- *     still be renamed without us hardcoding assumptions.
  */
 function maybeRenameOwnerIdToEmail() {
 	const email = process.env.OWNER_EMAIL;
-	if (!email) {
-		console.log('  · OWNER_EMAIL not set, skipping owner_id rename (set it to migrate legacy gh:* rows)');
+	const explicitOld = process.env.OLD_OWNER_ID;
+	const explicitNew = process.env.NEW_OWNER_ID;
+
+	let oldId;
+	let newId;
+	if (explicitOld && explicitNew) {
+		oldId = explicitOld;
+		newId = explicitNew;
+	} else if (email) {
+		if (!email.includes('@')) {
+			throw new Error(`OWNER_EMAIL must be a valid email, got: ${email}`);
+		}
+		oldId = explicitOld || `gh:${email.split('@')[0]}`;
+		newId = email;
+	} else {
+		console.log('  · neither OWNER_EMAIL nor OLD_OWNER_ID+NEW_OWNER_ID set, skipping owner_id rename');
 		return;
 	}
-	if (!email.includes('@')) {
-		throw new Error(`OWNER_EMAIL must be a valid email, got: ${email}`);
-	}
-	const expectedLocalPart = email.split('@')[0];
-	const oldId = process.env.OLD_OWNER_ID || `gh:${expectedLocalPart}`;
 
 	const result = execSqlJson(`SELECT id FROM users WHERE id = '${oldId}';`);
 	const oldRows = (result?.[0]?.results) || [];
@@ -240,18 +258,19 @@ function maybeRenameOwnerIdToEmail() {
 		return;
 	}
 
-	const targetResult = execSqlJson(`SELECT id FROM users WHERE id = '${email}';`);
+	const targetResult = execSqlJson(`SELECT id FROM users WHERE id = '${newId}';`);
 	const targetExists = ((targetResult?.[0]?.results) || []).length > 0;
 	const now = Date.now();
 
 	if (targetExists) {
-		console.log(`  + rename owner_id ${oldId} -> ${email} (target row exists; merging)`);
-		execSql(`UPDATE links SET owner_id = '${email}' WHERE owner_id = '${oldId}';`);
+		console.log(`  + rename owner_id ${oldId} -> ${newId} (target row exists; merging)`);
+		execSql(`UPDATE links SET owner_id = '${newId}' WHERE owner_id = '${oldId}';`);
 		execSql(`DELETE FROM users WHERE id = '${oldId}';`);
 	} else {
-		console.log(`  + rename owner_id ${oldId} -> ${email}`);
-		execSql(`UPDATE users SET id = '${email}', email = '${email}', updated_at = ${now} WHERE id = '${oldId}';`);
-		execSql(`UPDATE links SET owner_id = '${email}' WHERE owner_id = '${oldId}';`);
+		console.log(`  + rename owner_id ${oldId} -> ${newId}`);
+		const emailUpdate = newId.includes('@') ? `, email = '${newId}'` : '';
+		execSql(`UPDATE users SET id = '${newId}'${emailUpdate}, updated_at = ${now} WHERE id = '${oldId}';`);
+		execSql(`UPDATE links SET owner_id = '${newId}' WHERE owner_id = '${oldId}';`);
 	}
 }
 

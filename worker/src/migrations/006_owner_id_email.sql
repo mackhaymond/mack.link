@@ -19,5 +19,10 @@
 --     (use this when the gh: local-part doesn't match the email local-part,
 --      e.g. existing data is 'gh:mackhaymond' but email is mack.haymond@icloud.com)
 --
--- Without OWNER_EMAIL the migration logs a skip and exits successfully —
--- fresh installs with email-based identity from day 1 don't need it.
+--   OLD_OWNER_ID=gh:ai-dev NEW_OWNER_ID=ai-dev npm run db:apply:local
+--     -> raw rename, no email validation. Use for synthetic identities
+--     (local dev's mock 'ai-dev' user, test fixtures, non-email schemes).
+--
+-- Without any of these env vars the migration logs a skip and exits
+-- successfully -- fresh installs with email-based identity from day 1
+-- don't need it.
