@@ -1,8 +1,8 @@
 import { withCors } from '../cors.js';
-import { sanitizeInput, isRateLimitedPersistent } from '../utils.js';
+import { sanitizeInput, getClientIP } from '../utils.js';
+import { checkRateLimit, rateLimitResponse } from '../rateLimit.js';
 import { validateShortcode, validateUrl, validateDescription, validateRedirectType, validateTags, validateISODate, validateActivationWindow } from '../validation.js';
 import { dbAll, dbGet, dbRun } from '../db.js';
-import { getConfig } from '../config.js';
 import { createPasswordHash, validatePasswordStrength } from '../password.js';
 
 // C13: explicit column list (never SELECT *, so password_hash can never leak)
@@ -58,16 +58,11 @@ function safeParseJsonArray(text) {
 
 export async function createLink(request, env, ownerId) {
 	try {
-		const { rateLimits } = getConfig(env);
-		if (
-			await isRateLimitedPersistent(env, request, {
-				key: 'create',
-				limit: Number(rateLimits.createPerHour || 50),
-				windowMs: Number(rateLimits.windowMs || 3600000),
-			})
-		) {
-			return withCors(env, new Response('Rate limit exceeded', { status: 429 }), request);
-		}
+		// B1: native rate-limit binding. Key includes ownerId so a single
+		// abusive user doesn't lock out other tenants (currently single-user
+		// but the multi-tenancy contract from C6 is preserved).
+		const rl = await checkRateLimit(env.RL_LINKS_CREATE, `${ownerId}:${getClientIP(request)}`);
+		if (!rl.allowed) return rateLimitResponse(env, request);
 		const body = await request.json();
 		let { shortcode, url, description, redirectType, tags, archived, activatesAt, expiresAt, password } = body;
 		shortcode = sanitizeInput(shortcode);
@@ -234,16 +229,8 @@ export async function updateLink(request, env, shortcode, ownerId) {
 			lastClicked: row.last_clicked || null,
 			passwordEnabled: !!row.password_enabled,
 		};
-		const { rateLimits } = getConfig(env);
-		if (
-			await isRateLimitedPersistent(env, request, {
-				key: 'update',
-				limit: Number(rateLimits.updatePerHour || 200),
-				windowMs: Number(rateLimits.windowMs || 3600000),
-			})
-		) {
-			return withCors(env, new Response('Rate limit exceeded', { status: 429 }), request);
-		}
+		const rl = await checkRateLimit(env.RL_LINKS_MUTATE, `${ownerId}:${getClientIP(request)}`);
+		if (!rl.allowed) return rateLimitResponse(env, request);
 		const updates = await request.json();
 		let { url, description, redirectType, tags, archived, activatesAt, expiresAt, password } = updates;
 		if (url !== undefined) url = sanitizeInput(url);
@@ -380,36 +367,16 @@ export async function deleteLink(env, shortcode, request, ownerId) {
 	// for not-yours so we don't leak existence.
 	const existing = await dbGet(env, `SELECT shortcode FROM links WHERE shortcode = ? AND owner_id = ?`, [shortcode, ownerId]);
 	if (!existing) return withCors(env, new Response('Link not found', { status: 404 }), request);
-	const { rateLimits } = getConfig(env);
-	if (
-		await isRateLimitedPersistent(env, request, {
-			key: 'delete',
-			limit: Number(rateLimits.deletePerHour || 200),
-			windowMs: Number(rateLimits.windowMs || 3600000),
-		})
-	) {
-		return withCors(env, new Response('Rate limit exceeded', { status: 429 }), request);
-	}
+	const rl = await checkRateLimit(env.RL_LINKS_MUTATE, `${ownerId}:${getClientIP(request)}`);
+	if (!rl.allowed) return rateLimitResponse(env, request);
 	await dbRun(env, `DELETE FROM links WHERE shortcode = ? AND owner_id = ?`, [shortcode, ownerId]);
 	return withCors(env, new Response(null, { status: 204 }), request);
 }
 
 export async function bulkDeleteLinks(request, env, ownerId) {
 	try {
-		const { rateLimits } = getConfig(env);
-		if (
-			await isRateLimitedPersistent(env, request, {
-				key: 'bulkDelete',
-				limit: Number(rateLimits.bulkDeletePerHour || 50),
-				windowMs: Number(rateLimits.windowMs || 3600000),
-			})
-		) {
-			return withCors(
-				env,
-				new Response(JSON.stringify({ error: 'Rate limit exceeded' }), { status: 429, headers: { 'Content-Type': 'application/json' } }),
-				request,
-			);
-		}
+		const rl = await checkRateLimit(env.RL_LINKS_BULK, `${ownerId}:${getClientIP(request)}`);
+		if (!rl.allowed) return rateLimitResponse(env, request, { json: true });
 		const { shortcodes } = await request.json();
 		if (!Array.isArray(shortcodes) || shortcodes.length === 0) {
 			return withCors(
@@ -515,20 +482,8 @@ export async function getLink(env, shortcode, request, ownerId) {
 
 export async function bulkCreateLinks(request, env, ownerId) {
 	try {
-		const { rateLimits } = getConfig(env);
-		if (
-			await isRateLimitedPersistent(env, request, {
-				key: 'bulkCreate',
-				limit: Number(rateLimits.bulkCreatePerHour || 50),
-				windowMs: Number(rateLimits.windowMs || 3600000),
-			})
-		) {
-			return withCors(
-				env,
-				new Response(JSON.stringify({ error: 'Rate limit exceeded' }), { status: 429, headers: { 'Content-Type': 'application/json' } }),
-				request,
-			);
-		}
+		const rl = await checkRateLimit(env.RL_LINKS_BULK, `${ownerId}:${getClientIP(request)}`);
+		if (!rl.allowed) return rateLimitResponse(env, request, { json: true });
 		const { items } = await request.json();
 		if (!Array.isArray(items) || items.length === 0) {
 			return withCors(

@@ -1,7 +1,5 @@
 import { getConfig } from './config.js';
-import { dbAll } from './db.js';
 import { withCors } from './cors.js';
-import { logger } from './logger.js';
 
 /**
  * Enhanced input sanitization with better security
@@ -97,48 +95,6 @@ export async function retryWithBackoff(operation, { maxRetries = 3, baseDelay = 
 	}
 }
 
-// Simple in-memory caches (edge-local) with size limits to prevent memory leaks
-const MAX_CACHE_SIZE = 10000;
-
-class BoundedMap extends Map {
-	constructor(maxSize = MAX_CACHE_SIZE) {
-		super();
-		this.maxSize = maxSize;
-	}
-	
-	set(key, value) {
-		// Remove oldest entry if we're at capacity
-		if (this.size >= this.maxSize) {
-			const firstKey = this.keys().next().value;
-			this.delete(firstKey);
-		}
-		return super.set(key, value);
-	}
-}
-
-// Edge-local caches for token and rate limit data
-export const tokenCache = new BoundedMap();
-export const rateLimitCache = new BoundedMap();
-
-/**
- * In-memory rate limiter fallback (used when D1 is unavailable)
- * @param {string} key - Rate limit key (usually IP address)
- * @param {Object} options - Rate limit options
- * @param {number} options.limit - Request limit (default: 100)
- * @param {number} options.windowMs - Time window in milliseconds (default: 1 hour)
- * @returns {boolean} True if rate limited
- */
-export function isRateLimited(key, { limit = 100, windowMs = 3600000 } = {}) {
-	const now = Date.now();
-	const window = Math.floor(now / windowMs);
-	const cacheKey = `${key}:${window}`;
-	
-	const current = rateLimitCache.get(cacheKey) || 0;
-	rateLimitCache.set(cacheKey, current + 1);
-	
-	return current >= limit;
-}
-
 /**
  * Extract client IP address from request headers
  * @param {Request} request - Cloudflare Worker request
@@ -151,70 +107,20 @@ export function getClientIP(request) {
 }
 
 /**
- * Persistent D1-based rate limiter.
+ * B1 (Sprint 2b): drop expired counters-table rows. The counters table
+ * is no longer used for rate limiting (that moved to Cloudflare's native
+ * Rate-Limit binding — see rateLimit.js), but it still backs the
+ * per-shortcode password-session token store in routes/password.js. Each
+ * verified password attempt writes a `pwd_session:<shortcode>:<token>`
+ * row with an `expires_at` set 1 hour out; this sweep drops those after
+ * they expire. The SQL is generic ("any row whose expires_at is past")
+ * but in practice all such rows are password-session rows.
  *
- * S2: prior versions opportunistically fired `cleanupExpiredCounters` from
- * the hot path on a 60s interval (`maybeScheduleCleanup`) so that the
- * counters table didn't accumulate stale rows between cron runs. That
- * approach added a `ctx.waitUntil` tax to every rate-limited endpoint call
- * and risked floating promises in non-runtime contexts (tests, scripts).
- *
- * Counter cleanup is now exclusively the cron handler's job (see
- * `scheduled` in src/index.js). Callers that still pass `ctx` in opts are
- * fine - it's ignored, since this function no longer needs it.
+ * Safe to run on every cron tick — the partial index on
+ * `counters(expires_at) WHERE expires_at IS NOT NULL` keeps the scan
+ * bounded to active sessions.
  */
-export async function isRateLimitedPersistent(env, request, { key = 'default', limit = 100, windowMs = 3600000 } = {}) {
-	try {
-		const now = Date.now();
-		const bucket = Math.floor(now / windowMs);
-		const ip = getClientIP(request);
-		const name = `rate:${key}:${windowMs}:${bucket}:${ip}`;
-		const expiresAt = new Date(now + (windowMs * 2)).toISOString();
-		const rows = await dbAll(env,
-			`INSERT INTO counters (name, value, expires_at) VALUES (?, 1, ?)
-			 ON CONFLICT(name) DO UPDATE SET 
-			   value = counters.value + 1,
-			   expires_at = excluded.expires_at
-			 RETURNING value`,
-			[name, expiresAt]
-		);
-		const value = (rows && rows[0] && (rows[0].value ?? rows[0].VALUE)) || 0;
-		return Number(value) > Number(limit);
-	} catch (e) {
-		logger.warn('rate_limit_d1_fallback', { key, error: e?.message });
-		const ip = getClientIP(request);
-		return isRateLimited(ip, { limit, windowMs });
-	}
-}
-
-/**
- * Clean expired entries from in-memory caches
- * Should be called periodically to prevent memory buildup
- */
-export function cleanupCaches() {
-	const now = Date.now();
-	const oneHour = 3600000;
-	
-	// Clean up rate limit cache entries older than 2 windows
-	for (const [key] of rateLimitCache.entries()) {
-		const parts = key.split(':');
-		const window = parseInt(parts[parts.length - 1]);
-		const windowMs = parseInt(parts[parts.length - 3]) || oneHour;
-		if (isNaN(window) || (now - window * windowMs) > (2 * windowMs)) {
-			rateLimitCache.delete(key);
-		}
-	}
-	
-	// Token cache cleanup is handled by application logic
-	// but we can clear very old entries (older than 24 hours)
-	for (const [key, entry] of tokenCache.entries()) {
-		if (entry && entry.timestamp && (now - entry.timestamp) > (24 * oneHour)) {
-			tokenCache.delete(key);
-		}
-	}
-}
-
-export async function cleanupExpiredCounters(env) {
+export async function cleanupExpiredPasswordSessions(env) {
 	const now = new Date().toISOString();
 	const { dbRun } = await import('./db.js');
 	await dbRun(env, `DELETE FROM counters WHERE expires_at IS NOT NULL AND expires_at < ?`, [now]);

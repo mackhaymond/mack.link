@@ -2,7 +2,8 @@ import { withCors } from '../cors.js';
 import { verifyPasswordHash, generateSessionToken } from '../password.js';
 import { dbGet, dbRun } from '../db.js';
 import { getConfig } from '../config.js';
-import { isRateLimitedPersistent } from '../utils.js';
+import { getClientIP } from '../utils.js';
+import { checkRateLimit, rateLimitResponse } from '../rateLimit.js';
 import { logger } from '../logger.js';
 
 const PASSWORD_SESSION_TTL_SECONDS = 3600;
@@ -68,22 +69,15 @@ export async function handlePasswordVerification(request, env) {
 			);
 		}
 
-		// H5: rate-limit password attempts per (shortcode + IP) per minute.
-		const { rateLimits } = getConfig(env);
-		const limited = await isRateLimitedPersistent(env, request, {
-			key: `password:${shortcode}`,
-			limit: Number(rateLimits.passwordVerifyPerMinute || 10),
-			windowMs: 60 * 1000,
-		});
-		if (limited) {
-			return withCors(
-				env,
-				new Response(JSON.stringify({ error: 'Too many attempts. Please wait a minute and try again.' }), {
-					status: 429,
-					headers: { 'Content-Type': 'application/json' },
-				}),
-				request,
-			);
+		// H5: rate-limit password attempts per (shortcode + IP). Key combines
+		// both so brute-forcing one shortcode from one IP is bounded, but a
+		// shared-IP NAT can still attempt different shortcodes.
+		const rl = await checkRateLimit(env.RL_PASSWORD_VERIFY, `${shortcode}:${getClientIP(request)}`);
+		if (!rl.allowed) {
+			return rateLimitResponse(env, request, {
+				json: true,
+				message: 'Too many attempts. Please wait a minute and try again.',
+			});
 		}
 
 		// Get link data including password hash
