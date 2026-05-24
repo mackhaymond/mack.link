@@ -35,10 +35,11 @@ jobs:
       - name: Lint
         run: npm run lint
 
-      - name: Test
-        run: npm test
-
       - name: Build
+        # Build must run before Test because worker/src/routes/admin.js imports
+        # the generated worker/src/admin-assets.js (gitignored) at module scope.
+        # On a fresh CI checkout that file doesn't exist yet, so the test
+        # import graph crashes if we test first.
         run: |
           cat > admin/.env.local << EOL
           VITE_API_BASE=http://localhost:8787
@@ -46,6 +47,9 @@ jobs:
           VITE_GITHUB_CLIENT_ID=test_client_id
           EOL
           npm run build
+
+      - name: Test
+        run: npm test
 
       - name: Check bundle size
         run: npm run check:bundle-size
