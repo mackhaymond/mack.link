@@ -1,48 +1,45 @@
 # Agents Guide
 
-This repository supports AI agents working locally with a zero-click dev authentication flow for the Admin UI and clear operational guidelines.
+Canonical dev / agent workflow docs live in [WARP.md](./WARP.md). Read that
+first — it covers `npm run dev:ai`, dev-auth, validation, and operational
+guidelines in detail.
 
-## Quick Start (Local)
+## Quick reference
 
-- Start dev servers:
-  - `npm run dev:ai`
-  - Worker: http://localhost:8787
-  - Admin: http://localhost:5173/admin
-- Open the Admin UI; it will auto-authenticate without redirects or cookies.
-- Look for the badge “Auth disabled (dev)” in the header.
+```bash
+npm install
+npm run dev:ai          # zero-click dev mode (auth disabled)
+npm run validate:local  # 19/19 must pass with dev:ai running
+npm run lint && npm test && npm run build
+```
 
-## How dev auth works
+- Worker: http://localhost:8787
+- Admin:  http://localhost:5173/admin
 
-- Admin runs with `VITE_AUTH_DISABLED=true` and sends `x-dev-auth: 1` on API requests.
-- Worker accepts this header only for `Host: localhost` / `127.0.0.1` and returns a mock user.
-- Authorized-user enforcement is skipped in this local mode.
-- Cookies are not required; no OAuth roundtrip.
+## Dev auth (defense in depth)
 
-Troubleshooting:
-- `/api/user` 403 → ensure request includes `x-dev-auth: 1` and Host is `localhost:8787`.
-- `/api/user` 401 → dev bypass not applied; ensure `npm run dev:ai` is running and Admin has `VITE_AUTH_DISABLED=true`.
+The dev bypass requires **both** `AUTH_DISABLED=true` **and**
+`ENVIRONMENT=development` in `worker/.dev.vars` (see `.dev.vars.example`).
+Setting only one of them does nothing — defense in depth so production can
+never accidentally enter dev mode. The Admin dev server sends
+`x-dev-auth: 1` and the Worker also requires the request Host to be
+localhost / 127.0.0.1.
 
-## Safe operation in Warp
+## Schema migrations
 
-- Long-running commands: describe what you need tested before running. Example: “Start `npm run dev:ai`. Then, open `/admin`, create `test1 → https://example.com`, verify redirect at `http://localhost:8787/test1`.” Wait for user approval (“continue”).
-- Use local logs when debugging: `npm run logs:tail`.
-- Version control: commit in logical chunks, prefer rebase over merge, push when a feature is complete.
+Use `npm run db:apply:local` (or `db:apply:prod`). It invokes the JS
+migration runner (`worker/scripts/migrate.mjs`) which tracks applied
+migrations in a `migrations` table. New migrations live under
+`worker/src/migrations/NNN_*.sql`. The runner is idempotent.
 
-## Typical agent tasks
+`worker/src/schema.sql` is for **fresh installs only** and stays in sync
+with the latest migration state.
 
-- Implement a UI feature: run `npm run dev:ai`, make code edits, refresh browser, and validate.
-- API changes: edit Worker files in `worker/src/`, verify via curl or browser, then update Admin service files.
-- Database migrations: modify `worker/src/schema.sql`, apply locally with `npm run db:apply:local`.
+## Safe operation in coding agents
 
-## Verification checklist
-
-- Admin loads without manual sign-in in dev mode
-- Creating, updating, and deleting links works
-- Redirects function (test shortcodes)
-- Analytics endpoints respond (overview, breakdown, timeseries)
-
-## Notes
-
-- The local-only header bypass is ignored in production.
-- Do not depend on third-party cookies during Admin dev.
-- For CI or headless tests, POST `/api/auth/dev/login` with `x-dev-auth: 1` if needed.
+- Long-running commands (e.g. `npm run dev:ai`): describe the intent
+  first, wait for approval, then run.
+- Use `npm run logs:tail` for debugging dev sessions.
+- Commit in logical chunks; rebase over merge; push when a feature is
+  complete. Don't deploy from CI for unreviewed branches.
+- For CI / headless tests, POST `/api/auth/dev/login` with `x-dev-auth: 1`.

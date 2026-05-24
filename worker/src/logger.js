@@ -57,12 +57,11 @@ class Logger {
 			...data
 		};
 		
-		// Add automatic duration if start time is set and duration not explicitly provided
 		if (this.startTime && !('duration' in data) && !('durationMs' in data)) {
 			logEntry.durationMs = Date.now() - this.startTime;
 		}
 		
-		console.log(JSON.stringify(logEntry));
+		console.log(JSON.stringify(logEntry, scrubSecrets));
 	}
 
 	/**
@@ -125,7 +124,38 @@ class Logger {
 	}
 }
 
+/**
+ * M14: JSON.stringify replacer that scrubs values likely to contain secrets.
+ * Drops headers/keys that match known sensitive names, redacts query strings
+ * for known credential params, and caps URL strings at 2KB.
+ */
+const SECRET_KEY_RE = /^(authorization|cookie|set-cookie|x-dev-auth|password|password_hash|jwt_secret|access_token|client_secret|api[_-]?key|session)$/i;
+const URL_CRED_PARAMS = new Set(['session', 'password', 'token', 'code']);
+
+function scrubSecrets(key, value) {
+	if (typeof key === 'string' && SECRET_KEY_RE.test(key)) return '[REDACTED]';
+	if (typeof value === 'string') {
+		if (value.length > 2048) {
+			value = value.slice(0, 2048) + `…(truncated ${value.length - 2048}B)`;
+		}
+		if (/^https?:\/\//i.test(value)) {
+			try {
+				const u = new URL(value);
+				let mutated = false;
+				for (const p of URL_CRED_PARAMS) {
+					if (u.searchParams.has(p)) {
+						u.searchParams.set(p, 'REDACTED');
+						mutated = true;
+					}
+				}
+				if (mutated) return u.toString();
+			} catch {}
+		}
+	}
+	return value;
+}
+
 export const logger = new Logger();
-export { Logger };
+export { Logger, scrubSecrets };
 
 

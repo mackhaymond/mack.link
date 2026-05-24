@@ -289,10 +289,13 @@ export function Analytics({ links, currentView }) {
                   params.set('to', range.to)
                   params.set('format', 'json')
 
+                  const headers = {}
+                  if (import.meta?.env?.VITE_AUTH_DISABLED === 'true') {
+                    headers['x-dev-auth'] = '1'
+                  }
                   const response = await fetch(`/api/analytics/export?${params.toString()}`, {
-                    headers: {
-                      Authorization: `Bearer ${localStorage.getItem('auth_token')}`,
-                    },
+                    credentials: 'include',
+                    headers,
                   })
 
                   if (!response.ok) throw new Error('Export failed')
@@ -620,10 +623,13 @@ export function Analytics({ links, currentView }) {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <div className="bg-white dark:bg-gray-800 rounded-lg shadow dark:shadow-gray-700/50 transition-colors">
           <div className="px-6 py-4 border-b border-gray-200 dark:border-gray-700">
-            <h3 className="text-lg font-medium text-gray-900 dark:text-white flex items-center">
-              <BarChart3 className="w-5 h-5 mr-2 text-blue-600" />
-              Clicks Over Time
-            </h3>
+            <div>
+              <h3 className="text-lg font-medium text-gray-900 dark:text-white flex items-center">
+                <BarChart3 className="w-5 h-5 mr-2 text-blue-600" />
+                Clicks Over Time
+              </h3>
+              <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">Times shown in UTC.</p>
+            </div>
           </div>
           <div className="p-6">
             {(scope === 'all' && tsLinks?.labels?.length && tsLinks?.series?.length) ? (

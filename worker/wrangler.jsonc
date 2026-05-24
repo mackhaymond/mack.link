@@ -6,9 +6,13 @@
 	"$schema": "node_modules/wrangler/config-schema.json",
 	"name": "worker",
 	"main": "src/index.js",
-	"compatibility_date": "2025-09-03",
+	// Bump alongside @cloudflare/vitest-pool-workers + wrangler upgrades so
+	// local Miniflare doesn't fall back to its bundled workerd date.
+	// vitest-pool-workers@0.12.21 ships workerd@1.20260310.x.
+	"compatibility_date": "2026-03-10",
 	"observability": {
 		"enabled": true,
+		"head_sampling_rate": 0.1
 	},
 	"d1_databases": [
 		{
@@ -18,39 +22,33 @@
 		}
 	],
 	"vars": {
-		"GITHUB_CLIENT_ID": "Ov23liS0CpATewxLcycF",
 		"AUTHORIZED_USER": "mackhaymond",
 		"SESSION_MAX_AGE": "28800",
 		"SESSION_COOKIE_NAME": "__Host-link_session",
+		"ALLOWED_ORIGINS": "https://link.mackhaymond.co",
+		"ALLOWED_REDIRECT_URIS": "https://link.mackhaymond.co/admin/auth/callback",
+		"ANALYTICS_RETENTION_DAYS": "365"
 	},
-	/**
-	 * Smart Placement
-	 * Docs: https://developers.cloudflare.com/workers/configuration/smart-placement/#smart-placement
-	 */
-	// "placement": { "mode": "smart" }
-	/**
-	 * Bindings
-	 * Bindings allow your Worker to interact with resources on the Cloudflare Developer Platform, including
-	 * databases, object storage, AI inference, real-time communication and more.
-	 * https://developers.cloudflare.com/workers/runtime-apis/bindings/
-	 */
-	/**
-	 * Environment Variables
-	 * https://developers.cloudflare.com/workers/wrangler/configuration/#environment-variables
-	 */
-	// "vars": { "MY_VARIABLE": "production_value" }
-	/**
-	 * Note: Use secrets to store sensitive data.
-	 * https://developers.cloudflare.com/workers/configuration/secrets/
-	 */
-	/**
-	 * Static Assets
-	 * https://developers.cloudflare.com/workers/static-assets/binding/
-	 */
-	// "assets": { "directory": "./public/", "binding": "ASSETS" }
-	/**
-	 * Service Bindings (communicate between multiple Workers)
-	 * https://developers.cloudflare.com/workers/wrangler/configuration/#service-bindings
-	 */
-	// "services": [{ "binding": "MY_SERVICE", "service": "my-service" }]
+	"triggers": {
+		"crons": ["0 3 * * *"]
+	},
+	// Staging env scaffolding (H22). Creating the staging D1 DB and
+	// populating database_id is a user task; see PR description.
+	"env": {
+		"staging": {
+			"name": "worker-staging",
+			"vars": {
+				"AUTHORIZED_USER": "mackhaymond",
+				"SESSION_MAX_AGE": "28800",
+				"SESSION_COOKIE_NAME": "__Host-link_session",
+				"ALLOWED_ORIGINS": "",
+				"ALLOWED_REDIRECT_URIS": "",
+				"ANALYTICS_RETENTION_DAYS": "30"
+			}
+			// d1_databases for staging must be filled in once the staging
+			// D1 is created via:
+			//   wrangler d1 create mack-link-staging
+			// then add a d1_databases entry mirroring prod with the new id.
+		}
+	}
 }

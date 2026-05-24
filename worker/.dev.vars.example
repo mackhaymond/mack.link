@@ -1,0 +1,29 @@
+# Copy to worker/.dev.vars and fill in. NEVER commit .dev.vars.
+# This file is loaded automatically by `wrangler dev`.
+
+# Required for dev-auth bypass. Both must be set for the worker to accept
+# the `x-dev-auth: 1` header and to serve a mock user.
+AUTH_DISABLED=true
+ENVIRONMENT=development
+
+# Required: HS256 secret for session JWTs. Generate one with:
+#   node -e "console.log(require('crypto').randomBytes(48).toString('base64'))"
+JWT_SECRET=replace-me-with-a-random-string
+
+# Allow cookies without the Secure flag (needed for http://localhost).
+SESSION_ALLOW_INSECURE_COOKIES=true
+
+# Comma-separated list of origins allowed via CORS.
+ALLOWED_ORIGINS=http://localhost:5173,http://localhost:8787,http://127.0.0.1:5173,http://127.0.0.1:8787
+
+# Comma-separated list of OAuth redirect_uri values that are allowed.
+ALLOWED_REDIRECT_URIS=http://localhost:5173/admin/auth/callback,http://localhost:8787/admin/auth/callback
+
+# Optional: override the mock user shown when AUTH_DISABLED=true.
+# AUTH_DISABLED_USER_LOGIN=ai-dev
+# AUTH_DISABLED_USER_NAME=AI Developer
+# AUTH_DISABLED_USER_AVATAR_URL=https://avatars.githubusercontent.com/u/0?v=4
+
+# For real OAuth flows in dev (rare; usually you'll use AUTH_DISABLED instead).
+# GITHUB_CLIENT_ID=
+# GITHUB_CLIENT_SECRET=

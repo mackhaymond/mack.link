@@ -1,6 +1,7 @@
 import { getConfig } from './config.js';
 import { dbAll } from './db.js';
 import { withCors } from './cors.js';
+import { logger } from './logger.js';
 
 /**
  * Enhanced input sanitization with better security
@@ -149,28 +150,38 @@ export function getClientIP(request) {
 	return request.headers.get('CF-Connecting-IP') || 'unknown';
 }
 
+// Tracks last cleanup timestamp per Worker isolate (H7: replaces Math.random schedule).
+let lastCleanupAt = 0;
+const CLEANUP_INTERVAL_MS = 60_000;
+
+function maybeScheduleCleanup(env, ctx) {
+	// Only fire cleanup when we have an ExecutionContext to anchor it via
+	// waitUntil. Without one, the promise would float - breaking test
+	// isolation in Miniflare and risking termination by the Workers runtime.
+	// Cron/test paths can call cleanupExpiredCounters directly if needed.
+	if (!ctx || typeof ctx.waitUntil !== 'function') return;
+	const now = Date.now();
+	if (now - lastCleanupAt < CLEANUP_INTERVAL_MS) return;
+	lastCleanupAt = now;
+	ctx.waitUntil(
+		cleanupExpiredCounters(env).catch((err) => {
+			logger.error('cleanup_expired_counters_failed', { error: err?.message });
+		}),
+	);
+}
+
 /**
- * Persistent D1-based rate limiter with automatic cleanup
- * @param {Object} env - Cloudflare Worker environment
- * @param {Request} request - Cloudflare Worker request
- * @param {Object} options - Rate limit options
- * @param {string} options.key - Rate limit key identifier (default: 'default')
- * @param {number} options.limit - Request limit (default: 100)
- * @param {number} options.windowMs - Time window in milliseconds (default: 1 hour)
- * @returns {Promise<boolean>} True if rate limited
+ * Persistent D1-based rate limiter with automatic cleanup.
+ * Pass `ctx` (Cloudflare's ExecutionContext) to allow the periodic cleanup
+ * to be tracked via ctx.waitUntil instead of becoming a floating promise. C10.
  */
-export async function isRateLimitedPersistent(env, request, { key = 'default', limit = 100, windowMs = 3600000 } = {}) {
+export async function isRateLimitedPersistent(env, request, { key = 'default', limit = 100, windowMs = 3600000, ctx } = {}) {
 	try {
 		const now = Date.now();
 		const bucket = Math.floor(now / windowMs);
 		const ip = getClientIP(request);
 		const name = `rate:${key}:${windowMs}:${bucket}:${ip}`;
-		
-		// Calculate expiry time (2 windows in the future to allow for clock drift)
 		const expiresAt = new Date(now + (windowMs * 2)).toISOString();
-		
-		// Use INSERT ... ON CONFLICT ... RETURNING value to atomically increment and read
-		// Also set expires_at for cleanup
 		const rows = await dbAll(env,
 			`INSERT INTO counters (name, value, expires_at) VALUES (?, 1, ?)
 			 ON CONFLICT(name) DO UPDATE SET 
@@ -180,15 +191,10 @@ export async function isRateLimitedPersistent(env, request, { key = 'default', l
 			[name, expiresAt]
 		);
 		const value = (rows && rows[0] && (rows[0].value ?? rows[0].VALUE)) || 0;
-		
-		// Opportunistically clean up expired rate limit entries (throttled to 1% of requests)
-		if (Math.random() < 0.01) {
-			cleanupExpiredCounters(env).catch(() => {}); // Fire and forget
-		}
-		
+		maybeScheduleCleanup(env, ctx);
 		return Number(value) > Number(limit);
 	} catch (e) {
-		// Fallback to in-memory limiter on failure
+		logger.warn('rate_limit_d1_fallback', { key, error: e?.message });
 		const ip = getClientIP(request);
 		return isRateLimited(ip, { limit, windowMs });
 	}
@@ -221,25 +227,10 @@ export function cleanupCaches() {
 	}
 }
 
-/**
- * Clean up expired ephemeral counter entries from D1
- * This prevents unbounded table growth for rate-limit and password session entries
- * Should be called opportunistically (e.g., 1% of requests)
- */
 export async function cleanupExpiredCounters(env) {
-	try {
-		const now = new Date().toISOString();
-		const { dbRun } = await import('./db.js');
-		
-		// Delete expired entries where expires_at is set and in the past
-		await dbRun(env,
-			`DELETE FROM counters WHERE expires_at IS NOT NULL AND expires_at < ?`,
-			[now]
-		);
-	} catch (error) {
-		// Log but don't throw - cleanup failures shouldn't break requests
-		console.error('Failed to cleanup expired counters:', error.message);
-	}
+	const now = new Date().toISOString();
+	const { dbRun } = await import('./db.js');
+	await dbRun(env, `DELETE FROM counters WHERE expires_at IS NOT NULL AND expires_at < ?`, [now]);
 }
 
 

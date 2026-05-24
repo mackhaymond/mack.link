@@ -36,7 +36,18 @@ function App() {
   const [showKeyboardHelp, setShowKeyboardHelp] = useState(false)
   const [isAuthenticated, setIsAuthenticated] = useState(authService.isAuthenticated())
   const [currentView, setCurrentView] = useState('links') // 'links' or 'analytics'
+  const [documentVisible, setDocumentVisible] = useState(
+    typeof document === 'undefined' ? true : !document.hidden,
+  )
   const searchInputRef = useRef(null)
+
+  // M9: pause polling when the tab is hidden, resume on visibility change.
+  useEffect(() => {
+    if (typeof document === 'undefined') return
+    const onVisibility = () => setDocumentVisible(!document.hidden)
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => document.removeEventListener('visibilitychange', onVisibility)
+  }, [])
 
   // Check if analytics polling should be active
   const isAnalyticsActive = useIsAnalyticsActive(currentView)
@@ -64,19 +75,32 @@ function App() {
     refetch,
   } = useLinks({
     enabled: isAuthenticated,
-    refetchInterval: isAnalyticsActive ? polling.active : polling.idle,
-    refetchIntervalInBackground: isAnalyticsActive,
+    refetchInterval: documentVisible ? (isAnalyticsActive ? polling.active : polling.idle) : false,
+    refetchIntervalInBackground: false,
   })
   const createLinkMutation = useCreateLink()
   const updateLinkMutation = useUpdateLink()
   const deleteLinkMutation = useDeleteLink()
   const bulkDeleteMutation = useBulkDeleteLinks()
 
-  // Listen for authentication state changes (no polling)
+  // Listen for authentication state changes (no polling).
+  // H9: also handle auth:unauthenticated (a 401/403 from the API surfaces here
+  // instead of a hard page reload) and auth:logout-failed (toast for failed
+  // server-side logout).
   useEffect(() => {
     const onAuthChange = () => setIsAuthenticated(authService.isAuthenticated())
+    const onUnauthenticated = () => setIsAuthenticated(false)
+    const onLogoutFailed = (e) => {
+      console.warn('Logout failed on the server (local session cleared anyway):', e?.detail?.error)
+    }
     window.addEventListener('auth:change', onAuthChange)
-    return () => window.removeEventListener('auth:change', onAuthChange)
+    window.addEventListener('auth:unauthenticated', onUnauthenticated)
+    window.addEventListener('auth:logout-failed', onLogoutFailed)
+    return () => {
+      window.removeEventListener('auth:change', onAuthChange)
+      window.removeEventListener('auth:unauthenticated', onUnauthenticated)
+      window.removeEventListener('auth:logout-failed', onLogoutFailed)
+    }
   }, [])
 
   const handleCreateLink = useCallback(

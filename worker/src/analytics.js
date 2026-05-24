@@ -1,6 +1,40 @@
 // Analytics using Cloudflare D1 (replaces KV)
 import { dbAll, dbGet, dbRun, dbBatch } from './db.js';
+import { UAParser } from 'ua-parser-js';
 
+/**
+ * M1: Generate a one-way per-day visitor fingerprint.
+ * SHA-256 over (IP + UA + day). Never stored as plain PII.
+ */
+export async function computeVisitorFingerprint(ip, userAgent, day) {
+	const data = new TextEncoder().encode(`${ip || ''}|${userAgent || ''}|${day}`);
+	const hash = await crypto.subtle.digest('SHA-256', data);
+	return Array.from(new Uint8Array(hash), (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+/**
+ * M1: returns true if this fingerprint hasn't been seen for (scope, day).
+ * Side-effect: inserts the fingerprint. Called once per dimension scope
+ * (link shortcode + _all) per click.
+ */
+export async function markVisitorIfNew(env, scope, day, fingerprint) {
+	const res = await dbRun(
+		env,
+		`INSERT OR IGNORE INTO visitor_fingerprints (scope, day, fingerprint) VALUES (?, ?, ?)`,
+		[scope, day, fingerprint],
+	);
+	const changes = res?.meta?.changes ?? res?.changes ?? 0;
+	return changes > 0;
+}
+
+/**
+ * Format a timestamp as a UTC-bucket day string YYYYMMDD.
+ *
+ * M2: UTC-only by design. Per-user timezone bucketing would require
+ * shifting at write time (different buckets per visitor) and is deferred.
+ * The Admin UI labels timeseries as "UTC" to avoid confusion.
+ * TODO(M16): expose timezone-aware buckets if requested.
+ */
 function formatDay(ts = Date.now()) {
 	const d = new Date(ts);
 	const y = d.getUTCFullYear();
@@ -9,44 +43,64 @@ function formatDay(ts = Date.now()) {
 	return `${y}${m}${day}`;
 }
 
-function parseDevice(userAgent = '') {
-	const ua = userAgent.toLowerCase();
-	if (/mobile|iphone|ipod|android(?!.*tablet)/.test(ua)) return 'mobile';
-	if (/ipad|tablet/.test(ua)) return 'tablet';
-	return 'desktop';
+/**
+ * H18: delete analytics rows older than `retentionDays` (default 365).
+ * Called from the cron handler in index.js. Safe to call multiple times.
+ */
+export async function purgeOldAnalytics(env, retentionDays = 365) {
+	const cutoff = formatDay(Date.now() - retentionDays * 86_400_000);
+	await dbRun(env, `DELETE FROM analytics_day WHERE day < ?`, [cutoff]);
+	await dbRun(env, `DELETE FROM analytics_day_agg WHERE day < ?`, [cutoff]);
 }
 
-function parseBrowser(userAgent = '') {
-	const ua = userAgent.toLowerCase();
-	if (ua.includes('edg/')) return 'edge';
-	if (ua.includes('chrome/') && !ua.includes('edg/')) return 'chrome';
-	if (ua.includes('firefox/')) return 'firefox';
-	if (ua.includes('safari/') && !ua.includes('chrome/')) return 'safari';
-	if (ua.includes('opera/') || ua.includes('opr/')) return 'opera';
-	return 'other';
+/**
+ * M6: parse device/browser/OS via ua-parser-js so we correctly attribute
+ * Brave, Vivaldi, Samsung Internet, headless Chrome, Edge Chromium, etc.
+ * Returns lowercase, stable keys for the analytics_agg dimensions.
+ */
+export function parseUA(userAgent = '') {
+	if (!userAgent) return { device: 'desktop', browser: 'other', os: 'other' };
+	const parsed = new UAParser(userAgent).getResult();
+	const deviceType = (parsed.device?.type || '').toLowerCase();
+	let device = 'desktop';
+	if (deviceType === 'mobile' || deviceType === 'wearable') device = 'mobile';
+	else if (deviceType === 'tablet') device = 'tablet';
+	const browser = (parsed.browser?.name || 'other').toLowerCase().replace(/\s+/g, '_');
+	let os = (parsed.os?.name || 'other').toLowerCase();
+	if (os.includes('mac')) os = 'macos';
+	else if (os.includes('windows')) os = 'windows';
+	else if (os.includes('ios')) os = 'ios';
+	else if (os.includes('android')) os = 'android';
+	else if (os.includes('linux')) os = 'linux';
+	return { device, browser, os };
 }
 
-function parseOS(userAgent = '') {
-	const ua = userAgent.toLowerCase();
-	if (ua.includes('windows nt')) return 'windows';
-	if (ua.includes('mac os x') || ua.includes('macos')) return 'macos';
-	if (ua.includes('linux')) return 'linux';
-	if (ua.includes('android')) return 'android';
-	if (ua.includes('iphone os') || ua.includes('ipad')) return 'ios';
-	return 'other';
-}
-
+/**
+ * Extract UTM / click-id parameters from a URL.
+ * M5: includes utm_id and the common ad-platform click IDs (gclid, fbclid,
+ * msclkid). Each value is capped to 255 chars to bound table key size.
+ */
+const UTM_KEYS = ['utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content', 'utm_id', 'gclid', 'fbclid', 'msclkid'];
+const UTM_KEY_MAP = {
+	utm_source: 'source',
+	utm_medium: 'medium',
+	utm_campaign: 'campaign',
+	utm_term: 'term',
+	utm_content: 'content',
+	utm_id: 'utm_id',
+	gclid: 'gclid',
+	fbclid: 'fbclid',
+	msclkid: 'msclkid',
+};
 function parseUTMParams(url) {
 	const utmParams = {};
 	try {
 		const urlObj = new URL(url);
 		const params = urlObj.searchParams;
-
-		if (params.get('utm_source')) utmParams.source = params.get('utm_source');
-		if (params.get('utm_medium')) utmParams.medium = params.get('utm_medium');
-		if (params.get('utm_campaign')) utmParams.campaign = params.get('utm_campaign');
-		if (params.get('utm_term')) utmParams.term = params.get('utm_term');
-		if (params.get('utm_content')) utmParams.content = params.get('utm_content');
+		for (const key of UTM_KEYS) {
+			const value = params.get(key);
+			if (value) utmParams[UTM_KEY_MAP[key]] = value.slice(0, 255);
+		}
 	} catch {}
 	return utmParams;
 }
@@ -57,10 +111,16 @@ function parseUTMParams(url) {
 function extractAnalyticsContext(request, shortcode) {
 	const userAgent = request.headers.get('User-Agent') || '';
 	const ref = request.headers.get('Referer') || '';
+	// M4: treat Sec-Fetch-Site: none (direct nav from address bar / bookmarks)
+	// and empty Referer as '(direct)'.
+	const secFetchSite = (request.headers.get('Sec-Fetch-Site') || '').toLowerCase();
 	let refHost = '';
-	try {
-		if (ref) refHost = new URL(ref).host;
-	} catch {}
+	if (ref) {
+		try { refHost = new URL(ref).host; } catch { refHost = ''; }
+	}
+	if (!refHost && (secFetchSite === 'none' || ref === '')) {
+		refHost = '(direct)';
+	}
 
 	// Enhanced analytics data from Cloudflare
 	const country = (request.cf && request.cf.country) || '??';
@@ -68,9 +128,7 @@ function extractAnalyticsContext(request, shortcode) {
 	const region = (request.cf && request.cf.region) || '';
 	const timezone = (request.cf && request.cf.timezone) || '';
 
-	const device = parseDevice(userAgent);
-	const browser = parseBrowser(userAgent);
-	const os = parseOS(userAgent);
+	const { device, browser, os } = parseUA(userAgent);
 	const utmParams = parseUTMParams(request.url);
 	const day = formatDay();
 
@@ -159,13 +217,22 @@ function buildAnalyticsStatements(context) {
 }
 
 /**
- * Get analytics statements without executing them
- * This allows for transactional operations with other queries
+ * Get analytics statements without executing them.
+ * If `uniqueScopes` is supplied (array of scopes for which this visitor is
+ * new today, computed by the caller via markVisitorIfNew), the returned
+ * statements will also bump unique_clicks. C9 callers compute fingerprints
+ * BEFORE building this list so the increments are part of the same batch.
  */
-export async function getAnalyticsStatements(env, request, shortcode, destinationUrl = '', requestLogger) {
+export async function getAnalyticsStatements(env, request, shortcode, destinationUrl = '', requestLogger, { uniqueScopes = [] } = {}) {
 	try {
 		const context = extractAnalyticsContext(request, shortcode);
-		return buildAnalyticsStatements(context);
+		const statements = buildAnalyticsStatements(context);
+		const day = context.day;
+		const uniqueDaySQL = `UPDATE analytics_day SET unique_clicks = COALESCE(unique_clicks, 0) + 1 WHERE scope = ? AND day = ?`;
+		for (const scope of uniqueScopes) {
+			statements.push({ sql: uniqueDaySQL, bindings: [scope, day] });
+		}
+		return statements;
 	} catch (error) {
 		if (requestLogger) {
 			requestLogger.error('Analytics statement generation failed', {
@@ -173,7 +240,6 @@ export async function getAnalyticsStatements(env, request, shortcode, destinatio
 				error: error.message,
 			});
 		}
-		// Return empty array on error to prevent transaction failure
 		return [];
 	}
 }
@@ -181,20 +247,18 @@ export async function getAnalyticsStatements(env, request, shortcode, destinatio
 /**
  * Record a click event with full analytics tracking
  */
-export async function recordClick(env, request, shortcode, destinationUrl = '', requestLogger) {
+export async function recordClick(env, request, shortcode, _destinationUrl = '', requestLogger) {
+	let statements;
 	try {
 		const context = extractAnalyticsContext(request, shortcode);
-		const statements = buildAnalyticsStatements(context);
+		statements = buildAnalyticsStatements(context);
 		await dbBatch(env, statements);
 	} catch (error) {
-		if (requestLogger) {
-			requestLogger.error('Analytics recording failed', {
-				shortcode,
-				error: error.message,
-				statementCount: statements?.length || 0,
-			});
-		}
-		// Re-throw to surface in waitUntil context for monitoring
+		requestLogger?.error('Analytics recording failed', {
+			shortcode,
+			error: error.message,
+			statementCount: statements?.length || 0,
+		});
 		throw error;
 	}
 }
@@ -206,20 +270,23 @@ export async function getTimeseries(env, shortcode, fromISO, toISO) {
 	const scKey = shortcode || '_all';
 	const start = formatDay(Date.UTC(from.getUTCFullYear(), from.getUTCMonth(), from.getUTCDate()));
 	const end = formatDay(Date.UTC(to.getUTCFullYear(), to.getUTCMonth(), to.getUTCDate()));
-	const rows = await dbAll(env, `SELECT day, clicks FROM analytics_day WHERE scope = ? AND day >= ? AND day <= ? ORDER BY day ASC`, [
-		scKey,
-		start,
-		end,
-	]);
-	const map = new Map(rows.map((r) => [r.day, r.clicks]));
+	const rows = await dbAll(
+		env,
+		`SELECT day, clicks, COALESCE(unique_clicks, 0) AS unique_clicks FROM analytics_day WHERE scope = ? AND day >= ? AND day <= ? ORDER BY day ASC`,
+		[scKey, start, end],
+	);
+	const map = new Map(rows.map((r) => [r.day, r]));
 	const points = [];
-	for (
-		let d = new Date(Date.UTC(from.getUTCFullYear(), from.getUTCMonth(), from.getUTCDate()));
-		d <= to;
-		d.setUTCDate(d.getUTCDate() + 1)
-	) {
-		const k = formatDay(d.getTime());
-		points.push({ date: d.toISOString().slice(0, 10), clicks: map.get(k) || 0 });
+	const startMs = Date.UTC(from.getUTCFullYear(), from.getUTCMonth(), from.getUTCDate());
+	const endMs = to.getTime();
+	for (let ts = startMs; ts <= endMs; ts += 86_400_000) {
+		const k = formatDay(ts);
+		const row = map.get(k);
+		points.push({
+			date: new Date(ts).toISOString().slice(0, 10),
+			clicks: row?.clicks || 0,
+			uniqueClicks: row?.unique_clicks || 0,
+		});
 	}
 	return { points };
 }
@@ -257,14 +324,12 @@ export async function getTimeseriesByLinks(env, fromISO, toISO, limit = 5) {
 		[...shortcodes, start, end],
 	);
 
-	// Build day labels
+	// M3: iterate by timestamp instead of mutating a Date object.
 	const labels = [];
-	for (
-		let d = new Date(Date.UTC(from.getUTCFullYear(), from.getUTCMonth(), from.getUTCDate()));
-		d <= to;
-		d.setUTCDate(d.getUTCDate() + 1)
-	) {
-		labels.push(d.toISOString().slice(0, 10));
+	const startMs = Date.UTC(from.getUTCFullYear(), from.getUTCMonth(), from.getUTCDate());
+	const endMs = to.getTime();
+	for (let ts = startMs; ts <= endMs; ts += 86_400_000) {
+		labels.push(new Date(ts).toISOString().slice(0, 10));
 	}
 
 	// Index rows per shortcode/day
@@ -324,23 +389,31 @@ export async function getOverview(env, shortcode) {
 		total = parseInt(row?.value || '0', 10) || 0;
 	}
 	const scKey = shortcode || '_all';
-	const todayRow = await dbGet(env, `SELECT clicks FROM analytics_day WHERE scope = ? AND day = ?`, [scKey, formatDay()]);
+	const todayRow = await dbGet(
+		env,
+		`SELECT clicks, COALESCE(unique_clicks, 0) AS unique_clicks FROM analytics_day WHERE scope = ? AND day = ?`,
+		[scKey, formatDay()],
+	);
 	const today = todayRow?.clicks || 0;
+	const uniqueToday = todayRow?.unique_clicks || 0;
 
-	// Calculate 7-day trend
 	const sevenDaysAgo = formatDay(Date.now() - 7 * 24 * 60 * 60 * 1000);
-	const trendRows = await dbAll(env, `SELECT day, clicks FROM analytics_day WHERE scope = ? AND day >= ? ORDER BY day ASC`, [
-		scKey,
-		sevenDaysAgo,
-	]);
+	const trendRows = await dbAll(
+		env,
+		`SELECT day, clicks, COALESCE(unique_clicks, 0) AS unique_clicks FROM analytics_day WHERE scope = ? AND day >= ? ORDER BY day ASC`,
+		[scKey, sevenDaysAgo],
+	);
 
 	const weeklyTotal = trendRows.reduce((sum, row) => sum + row.clicks, 0);
+	const weeklyUnique = trendRows.reduce((sum, row) => sum + (row.unique_clicks || 0), 0);
 	const averageDaily = weeklyTotal > 0 ? Math.round((weeklyTotal / 7) * 100) / 100 : 0;
 
 	return {
 		totalClicks: total,
 		clicksToday: today,
+		uniqueClicksToday: uniqueToday,
 		weeklyTotal,
+		weeklyUnique,
 		averageDaily,
 		trend: trendRows,
 	};

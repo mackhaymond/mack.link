@@ -14,16 +14,25 @@
 		"tail": "wrangler tail",
 		"test": "vitest run",
 		"test:watch": "vitest",
-		"db:apply:local": "wrangler d1 execute mack-link --local --file src/schema.sql",
-		"db:apply": "wrangler d1 execute mack-link --file src/schema.sql",
+		"lint": "eslint src scripts test",
+		"db:apply:local": "node scripts/migrate.mjs --local",
+		"db:apply": "node scripts/migrate.mjs --remote",
+		"db:apply:schema:local": "wrangler d1 execute mack-link --local --file src/schema.sql",
+		"db:apply:schema": "wrangler d1 execute mack-link --file src/schema.sql",
 		"clean": "rm -rf node_modules .wrangler"
 	},
 	"devDependencies": {
-		"@cloudflare/vitest-pool-workers": "^0.10.3",
-		"vitest": "^3.2.0",
-		"wrangler": "^4.33.2"
+		"@cloudflare/vitest-pool-workers": "^0.12.21",
+		"@eslint/js": "^9.39.0",
+		"eslint": "^9.39.0",
+		"globals": "^16.5.0",
+		"vitest": "^3.2.4",
+		"wrangler": "^4.94.0"
 	},
 	"optionalDependencies": {
 		"@rollup/rollup-linux-x64-gnu": "4.50.0"
+	},
+	"dependencies": {
+		"ua-parser-js": "^2.0.10"
 	}
 }

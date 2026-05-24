@@ -10,11 +10,11 @@ const queryClient = new QueryClient({
       refetchOnWindowFocus: 'always',
       refetchOnReconnect: 'always',
       retry: (failureCount, error) => {
-        // Don't retry on 401/403 errors
-        if (error?.status === 401 || error?.status === 403) {
-          return false
-        }
-        // Retry up to 3 times for other errors
+        // M8: don't retry any 4xx (validation / not found / forbidden / etc.)
+        // Only retry network errors (TypeError from fetch) and 5xx. The shared
+        // http client attaches `.status` to non-2xx errors.
+        const status = error?.status
+        if (typeof status === 'number' && status >= 400 && status < 500) return false
         return failureCount < 3
       },
       retryDelay: (attemptIndex) => Math.min(1000 * 2 ** attemptIndex, 30000),

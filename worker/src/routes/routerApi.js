@@ -5,6 +5,7 @@ import { handleGitHubAuth, handleGitHubCallback, handleDevAuthLogin } from './ro
 import { getTimeseries, getTimeseriesByLinks, getBreakdown, getOverview, exportAnalytics } from '../analytics.js';
 import { handlePasswordVerification } from './password.js';
 import { getReservedPathsList } from '../reservedPaths.js';
+import { getOwnerId } from '../users.js';
 
 export async function handleAPI(request, env, requestLogger) {
 	const url = new URL(request.url);
@@ -31,18 +32,13 @@ export async function handleAPI(request, env, requestLogger) {
 		return await handlePasswordVerification(request, env);
 	}
 
-	// Protected endpoints - auth required (bypass only when AUTH_DISABLED=true)
-	let authResult;
-	{
-		const { getConfig, getMockUser } = await import('../config.js');
-		const cfg = getConfig(env);
-		if (cfg.authDisabled) {
-			authResult = getMockUser(env);
-		} else {
-			authResult = await requireAuth(env, request);
-			if (authResult instanceof Response) return authResult;
-		}
-	}
+	// Protected endpoints - auth required.
+	// requireAuth() returns the resolved user (mock user in dev bypass, real user otherwise)
+	// or a Response on failure. After authentication, ensure a users row exists and
+	// derive the ownerId used for multi-tenant filtering (C6).
+	let authResult = await requireAuth(env, request);
+	if (authResult instanceof Response) return authResult;
+	const ownerId = await getOwnerId(env, authResult);
 
 	// Analytics endpoints (protected)
 	if (path.startsWith('/api/analytics/')) {
@@ -108,26 +104,25 @@ export async function handleAPI(request, env, requestLogger) {
 
 	if (path === '/api/links') {
 		if (method === 'GET') {
-			// Backward-compatible: if query params present, use paginated list
 			const u = new URL(request.url);
 			if (u.searchParams.has('limit') || u.searchParams.has('cursor')) {
-				return await listLinks(env, request);
+				return await listLinks(env, request, ownerId);
 			}
-			return await getAllLinks(env, request);
+			return await getAllLinks(env, request, ownerId);
 		}
-		if (method === 'POST') return await createLink(request, env);
+		if (method === 'POST') return await createLink(request, env, ownerId);
 	}
 
 	if (path === '/api/links/bulk') {
-		if (method === 'DELETE') return await bulkDeleteLinks(request, env);
-		if (method === 'POST') return await bulkCreateLinks(request, env);
+		if (method === 'DELETE') return await bulkDeleteLinks(request, env, ownerId);
+		if (method === 'POST') return await bulkCreateLinks(request, env, ownerId);
 	}
 
 	if (path.startsWith('/api/links/')) {
 		const shortcode = path.split('/')[3];
-		if (method === 'PUT') return await updateLink(request, env, shortcode);
-		if (method === 'DELETE') return await deleteLink(env, shortcode, request);
-		if (method === 'GET') return await getLink(env, shortcode, request);
+		if (method === 'PUT') return await updateLink(request, env, shortcode, ownerId);
+		if (method === 'DELETE') return await deleteLink(env, shortcode, request, ownerId);
+		if (method === 'GET') return await getLink(env, shortcode, request, ownerId);
 	}
 
 	if (path === '/api/user') {

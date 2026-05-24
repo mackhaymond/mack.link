@@ -1,8 +1,9 @@
 import { logger } from '../logger.js';
 import { withCors } from '../cors.js';
-import { recordClick, getAnalyticsStatements } from '../analytics.js';
-import { dbGet, dbRun } from '../db.js';
-import { verifyPasswordSession, renderPasswordPrompt } from './password.js';
+import { getAnalyticsStatements, computeVisitorFingerprint, markVisitorIfNew } from '../analytics.js';
+import { dbGet } from '../db.js';
+import { getClientIP } from '../utils.js';
+import { verifyPasswordSession, renderPasswordPrompt, readPasswordSessionCookie } from './password.js';
 
 export async function handleRedirect(request, env, requestLogger = logger, ctx) {
 	const url = new URL(request.url);
@@ -45,47 +46,63 @@ export async function handleRedirect(request, env, requestLogger = logger, ctx) 
 		}
 	}
 
-	// Check for password protection
+	// C5: read the password session token from a per-shortcode httpOnly cookie
+	// rather than the URL query string (URL would leak the secret via Referer,
+	// browser history, and server access logs).
 	if (link.passwordEnabled && link.passwordHash) {
-		const url = new URL(request.url);
-		const sessionToken = url.searchParams.get('session');
-
-		// Check if valid session token provided
-		if (sessionToken) {
-			const isValidSession = await verifyPasswordSession(env, shortcode, sessionToken);
-			if (!isValidSession) {
-				return new Response(renderPasswordPrompt(shortcode, 'Session expired. Please enter password again.'), {
-					status: 401,
-					headers: { 'Content-Type': 'text/html; charset=utf-8' },
-				});
-			}
-		} else {
-			// No session token, show password prompt
+		const sessionToken = readPasswordSessionCookie(request, shortcode);
+		if (!sessionToken) {
 			return new Response(renderPasswordPrompt(shortcode), {
 				status: 401,
 				headers: { 'Content-Type': 'text/html; charset=utf-8' },
 			});
 		}
+		const isValidSession = await verifyPasswordSession(env, shortcode, sessionToken);
+		if (!isValidSession) {
+			return new Response(renderPasswordPrompt(shortcode, 'Session expired. Please enter password again.'), {
+				status: 401,
+				headers: { 'Content-Type': 'text/html; charset=utf-8' },
+			});
+		}
 	}
-	// Skip counting for bots, crawlers, and prefetch/HEAD
+	// C9: filter bots, prefetch hints, and HEAD requests BEFORE building the
+	// analytics statement batch. These requests still get the redirect, but
+	// we skip both the link click increment and the analytics writes so that
+	// prefetch implementations (Chrome speculation, Firefox link-prefetch,
+	// Safari pre-rendering, etc.) don't inflate click counts.
 	const ua = request.headers.get('User-Agent') || '';
 	const method = request.method || 'GET';
 	const isBot =
-		/(bot|spider|crawler|preview|facebookexternalhit|slackbot|discordbot|twitterbot|linkedinbot|embedly|quora link|whatsapp|skypeuripreview|googlebot|bingbot|yahoobot|duckduckbot|baiduspider|yandexbot|applebot|pinterestrequestinfobot|telegrambot|bitlybot|zoom|msteamsbot)/i.test(
+		/(bot|spider|crawler|preview|facebookexternalhit|slackbot|discordbot|twitterbot|linkedinbot|embedly|quora link|whatsapp|skypeuripreview|googlebot|bingbot|yahoobot|duckduckbot|baiduspider|yandexbot|applebot|pinterestrequestinfobot|telegrambot|bitlybot|zoom|msteamsbot|headlesschrome|phantomjs|puppeteer)/i.test(
 			ua,
 		);
 	const isHead = method === 'HEAD';
-	if (!isBot && !isHead) {
-		// Record click and analytics transactionally to prevent data inconsistency
+	const isPrefetch = detectPrefetch(request);
+	if (!isBot && !isHead && !isPrefetch) {
 		try {
 			const now = new Date().toISOString();
 			const updateLinkStatement = {
 				sql: `UPDATE links SET clicks = COALESCE(clicks,0) + 1, last_clicked = ? WHERE shortcode = ?`,
 				bindings: [now, shortcode]
 			};
-			
-			// Get analytics statements and combine with link update
-			const analyticsStatements = await getAnalyticsStatements(env, request, shortcode, link.url, requestLogger);
+
+			// M1: unique visitor detection. Compute fingerprint per-day and try to
+			// claim it for both the shortcode and global '_all' scopes. Whichever
+			// scopes were freshly claimed get unique_clicks bumped in the same batch.
+			let uniqueScopes = [];
+			try {
+				const ip = getClientIP(request);
+				const day = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+				const fp = await computeVisitorFingerprint(ip, ua, day);
+				const newForScope = await markVisitorIfNew(env, shortcode, day, fp);
+				const newForAll = await markVisitorIfNew(env, '_all', day, fp);
+				if (newForScope) uniqueScopes.push(shortcode);
+				if (newForAll) uniqueScopes.push('_all');
+			} catch (fpErr) {
+				requestLogger.warn('Visitor fingerprint failed (proceeding without unique counting)', { error: fpErr.message });
+			}
+
+			const analyticsStatements = await getAnalyticsStatements(env, request, shortcode, link.url, requestLogger, { uniqueScopes });
 			const allStatements = [updateLinkStatement, ...analyticsStatements];
 			
 			// Execute all statements in a single transaction
@@ -112,8 +129,32 @@ export async function handleRedirect(request, env, requestLogger = logger, ctx) 
 		destination: link.url,
 		redirectType: link.redirectType || 301,
 		previousClicks: link.clicks || 0,
+		bot: isBot,
+		head: isHead,
+		prefetch: isPrefetch,
 	});
 	return Response.redirect(link.url, link.redirectType || 301);
+}
+
+/**
+ * Detect whether the request is a prefetch / speculative fetch initiated by
+ * the browser rather than a real user navigation. We must NOT increment click
+ * counters or record analytics for these.
+ *
+ * Covers:
+ *   - Fetch Metadata spec:  Sec-Purpose: prefetch[, prerender]
+ *                           Sec-Fetch-Dest: prefetch
+ *   - Legacy headers used by Chrome/Firefox/Safari and various browsers.
+ */
+function detectPrefetch(request) {
+	const h = request.headers;
+	const secPurpose = (h.get('Sec-Purpose') || '').toLowerCase();
+	if (secPurpose.includes('prefetch') || secPurpose.includes('prerender')) return true;
+	if ((h.get('Purpose') || '').toLowerCase() === 'prefetch') return true;
+	if ((h.get('X-Moz') || '').toLowerCase() === 'prefetch') return true;
+	if ((h.get('X-Purpose') || '').toLowerCase() === 'prefetch') return true;
+	if ((h.get('Sec-Fetch-Dest') || '').toLowerCase() === 'prefetch') return true;
+	return false;
 }
 
 function htmlError(env, request, status, title, subtitle) {

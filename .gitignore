@@ -18,3 +18,13 @@ admin/package-lock.json
 # Env files
 .env
 **/.env.local
+
+# Local agent settings (per-user, never committed)
+.claude/
+**/.claude/
+.opencode/
+**/.opencode/
+**/.claude/settings.local.json
+
+# Per-workspace dist (built output of @mack-link/shared, etc.)
+packages/*/dist/

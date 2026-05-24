@@ -1,47 +1,62 @@
 import { withCors } from '../cors.js';
 import { sanitizeInput, isRateLimitedPersistent } from '../utils.js';
-import { validateShortcode, validateUrl, validateDescription, validateRedirectType, validateTags, validateISODate } from '../validation.js';
+import { validateShortcode, validateUrl, validateDescription, validateRedirectType, validateTags, validateISODate, validateActivationWindow } from '../validation.js';
 import { dbAll, dbGet, dbRun } from '../db.js';
 import { getConfig } from '../config.js';
 import { createPasswordHash, validatePasswordStrength } from '../password.js';
 
-export async function getAllLinks(env, request) {
+// C13: explicit column list (never SELECT *, so password_hash can never leak)
+// and capped result count to bound response size.
+const LINK_PUBLIC_COLUMNS = `shortcode, url, description, redirect_type, tags, archived, activates_at, expires_at, created, updated, clicks, last_clicked, password_enabled`;
+const GET_ALL_LINKS_CAP = 500;
+
+function rowToLink(r) {
+	return {
+		url: r.url,
+		description: r.description || '',
+		redirectType: r.redirect_type || 301,
+		tags: safeParseJsonArray(r.tags),
+		archived: !!r.archived,
+		activatesAt: r.activates_at || null,
+		expiresAt: r.expires_at || null,
+		created: r.created,
+		updated: r.updated,
+		clicks: r.clicks || 0,
+		lastClicked: r.last_clicked || null,
+		passwordEnabled: !!r.password_enabled,
+	};
+}
+
+export async function getAllLinks(env, request, ownerId) {
 	const rows = await dbAll(
 		env,
-		`SELECT shortcode, url, description, redirect_type, tags, archived, activates_at, expires_at, created, updated, clicks, last_clicked, password_enabled FROM links`,
+		`SELECT ${LINK_PUBLIC_COLUMNS} FROM links WHERE owner_id = ? ORDER BY shortcode ASC LIMIT ?`,
+		[ownerId, GET_ALL_LINKS_CAP + 1],
 	);
+	const truncated = rows.length > GET_ALL_LINKS_CAP;
+	const page = truncated ? rows.slice(0, GET_ALL_LINKS_CAP) : rows;
 	const links = {};
-	for (const r of rows) {
-		links[r.shortcode] = {
-			url: r.url,
-			description: r.description || '',
-			redirectType: r.redirect_type || 301,
-			tags: safeParseJsonArray(r.tags),
-			archived: !!r.archived,
-			activatesAt: r.activates_at || null,
-			expiresAt: r.expires_at || null,
-			created: r.created,
-			updated: r.updated,
-			clicks: r.clicks || 0,
-			lastClicked: r.last_clicked || null,
-			passwordEnabled: !!r.password_enabled,
-		};
+	for (const r of page) links[r.shortcode] = rowToLink(r);
+	const headers = { 'Content-Type': 'application/json' };
+	if (truncated) {
+		headers['Link'] = '</api/links?limit=500&cursor=' + encodeURIComponent(page[page.length - 1].shortcode) + '>; rel="next"';
 	}
-
-	return withCors(env, new Response(JSON.stringify(links), { headers: { 'Content-Type': 'application/json' } }), request);
+	return withCors(env, new Response(JSON.stringify(links), { headers }), request);
 }
 
 function safeParseJsonArray(text) {
 	if (!text) return [];
 	try {
 		const v = JSON.parse(text);
-		return Array.isArray(v) ? v : [];
+		if (!Array.isArray(v)) return [];
+		// M15: ensure every element is a string, drop anything else.
+		return v.filter((x) => typeof x === 'string');
 	} catch {
 		return [];
 	}
 }
 
-export async function createLink(request, env) {
+export async function createLink(request, env, ownerId) {
 	try {
 		const { rateLimits } = getConfig(env);
 		if (
@@ -108,6 +123,13 @@ export async function createLink(request, env) {
 				new Response(JSON.stringify({ error: expiresAtError }), { status: 400, headers: { 'Content-Type': 'application/json' } }),
 				request,
 			);
+		const windowError = validateActivationWindow(activatesAt, expiresAt);
+		if (windowError)
+			return withCors(
+				env,
+				new Response(JSON.stringify({ error: windowError }), { status: 400, headers: { 'Content-Type': 'application/json' } }),
+				request,
+			);
 
 		// Validate password if provided
 		let passwordHash = null;
@@ -128,6 +150,8 @@ export async function createLink(request, env) {
 			passwordEnabled = true;
 		}
 
+		// C6: shortcodes are globally unique (PRIMARY KEY). Don't leak ownership of
+		// taken shortcodes - return the same 409 regardless of who owns it.
 		const existing = await dbGet(env, `SELECT shortcode FROM links WHERE shortcode = ?`, [shortcode]);
 		if (existing)
 			return withCors(
@@ -154,9 +178,10 @@ export async function createLink(request, env) {
 		};
 		await dbRun(
 			env,
-			`INSERT INTO links (shortcode, url, description, redirect_type, tags, archived, activates_at, expires_at, password_hash, password_enabled, created, updated, clicks, last_clicked) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+			`INSERT INTO links (shortcode, owner_id, url, description, redirect_type, tags, archived, activates_at, expires_at, password_hash, password_enabled, created, updated, clicks, last_clicked) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
 			[
 				shortcode,
+				ownerId,
 				linkData.url,
 				linkData.description,
 				linkData.redirectType,
@@ -185,12 +210,14 @@ export async function createLink(request, env) {
 	}
 }
 
-export async function updateLink(request, env, shortcode) {
+export async function updateLink(request, env, shortcode, ownerId) {
 	try {
+		// C6: filter by owner_id. Return 404 (not 403) when the link belongs to
+		// someone else to avoid leaking existence.
 		const row = await dbGet(
 			env,
-			`SELECT shortcode, url, description, redirect_type, tags, archived, activates_at, expires_at, created, updated, clicks, last_clicked, password_enabled FROM links WHERE shortcode = ?`,
-			[shortcode],
+			`SELECT shortcode, url, description, redirect_type, tags, archived, activates_at, expires_at, created, updated, clicks, last_clicked, password_enabled FROM links WHERE shortcode = ? AND owner_id = ?`,
+			[shortcode, ownerId],
 		);
 		if (!row) return withCors(env, new Response('Link not found', { status: 404 }), request);
 		const currentData = {
@@ -305,8 +332,8 @@ export async function updateLink(request, env, shortcode) {
 		};
 		const sql =
 			passwordHash !== undefined
-				? `UPDATE links SET url = ?, description = ?, redirect_type = ?, tags = ?, archived = ?, activates_at = ?, expires_at = ?, password_hash = ?, password_enabled = ?, updated = ? WHERE shortcode = ?`
-				: `UPDATE links SET url = ?, description = ?, redirect_type = ?, tags = ?, archived = ?, activates_at = ?, expires_at = ?, updated = ? WHERE shortcode = ?`;
+				? `UPDATE links SET url = ?, description = ?, redirect_type = ?, tags = ?, archived = ?, activates_at = ?, expires_at = ?, password_hash = ?, password_enabled = ?, updated = ? WHERE shortcode = ? AND owner_id = ?`
+				: `UPDATE links SET url = ?, description = ?, redirect_type = ?, tags = ?, archived = ?, activates_at = ?, expires_at = ?, updated = ? WHERE shortcode = ? AND owner_id = ?`;
 
 		const params =
 			passwordHash !== undefined
@@ -322,6 +349,7 @@ export async function updateLink(request, env, shortcode) {
 						linkData.passwordEnabled ? 1 : 0,
 						linkData.updated,
 						shortcode,
+						ownerId,
 					]
 				: [
 						linkData.url,
@@ -333,6 +361,7 @@ export async function updateLink(request, env, shortcode) {
 						linkData.expiresAt,
 						linkData.updated,
 						shortcode,
+						ownerId,
 					];
 
 		await dbRun(env, sql, params);
@@ -346,8 +375,10 @@ export async function updateLink(request, env, shortcode) {
 	}
 }
 
-export async function deleteLink(env, shortcode, request) {
-	const existing = await dbGet(env, `SELECT shortcode FROM links WHERE shortcode = ?`, [shortcode]);
+export async function deleteLink(env, shortcode, request, ownerId) {
+	// C6: only return / delete when the requester owns the link. 404 (not 403)
+	// for not-yours so we don't leak existence.
+	const existing = await dbGet(env, `SELECT shortcode FROM links WHERE shortcode = ? AND owner_id = ?`, [shortcode, ownerId]);
 	if (!existing) return withCors(env, new Response('Link not found', { status: 404 }), request);
 	const { rateLimits } = getConfig(env);
 	if (
@@ -359,11 +390,11 @@ export async function deleteLink(env, shortcode, request) {
 	) {
 		return withCors(env, new Response('Rate limit exceeded', { status: 429 }), request);
 	}
-	await dbRun(env, `DELETE FROM links WHERE shortcode = ?`, [shortcode]);
+	await dbRun(env, `DELETE FROM links WHERE shortcode = ? AND owner_id = ?`, [shortcode, ownerId]);
 	return withCors(env, new Response(null, { status: 204 }), request);
 }
 
-export async function bulkDeleteLinks(request, env) {
+export async function bulkDeleteLinks(request, env, ownerId) {
 	try {
 		const { rateLimits } = getConfig(env);
 		if (
@@ -413,18 +444,30 @@ export async function bulkDeleteLinks(request, env) {
 				);
 			}
 		}
-		const results = { deleted: [], notFound: [], errors: [] };
-		for (const sc of shortcodes) {
+		// H15: replace N+1 with a single SELECT and a single DELETE.
+		// Both queries filter by owner_id (C6) so users can never bulk-delete
+		// each other's links.
+		const placeholders = shortcodes.map(() => '?').join(',');
+		const existingRows = await dbAll(
+			env,
+			`SELECT shortcode FROM links WHERE shortcode IN (${placeholders}) AND owner_id = ?`,
+			[...shortcodes, ownerId],
+		);
+		const existingSet = new Set(existingRows.map((r) => r.shortcode));
+		const toDelete = shortcodes.filter((sc) => existingSet.has(sc));
+		const notFound = shortcodes.filter((sc) => !existingSet.has(sc));
+		const results = { deleted: [], notFound, errors: [] };
+		if (toDelete.length > 0) {
 			try {
-				const existing = await dbGet(env, `SELECT shortcode FROM links WHERE shortcode = ?`, [sc]);
-				if (!existing) {
-					results.notFound.push(sc);
-					continue;
-				}
-				await dbRun(env, `DELETE FROM links WHERE shortcode = ?`, [sc]);
-				results.deleted.push(sc);
+				const delPlaceholders = toDelete.map(() => '?').join(',');
+				await dbRun(
+					env,
+					`DELETE FROM links WHERE shortcode IN (${delPlaceholders}) AND owner_id = ?`,
+					[...toDelete, ownerId],
+				);
+				results.deleted = toDelete;
 			} catch (error) {
-				results.errors.push({ shortcode: sc, error: error.message });
+				results.errors = toDelete.map((sc) => ({ shortcode: sc, error: error.message }));
 			}
 		}
 		return withCors(
@@ -447,11 +490,11 @@ export async function bulkDeleteLinks(request, env) {
 	}
 }
 
-export async function getLink(env, shortcode, request) {
+export async function getLink(env, shortcode, request, ownerId) {
 	const r = await dbGet(
 		env,
-		`SELECT shortcode, url, description, redirect_type, tags, archived, activates_at, expires_at, created, updated, clicks, last_clicked FROM links WHERE shortcode = ?`,
-		[shortcode],
+		`SELECT shortcode, url, description, redirect_type, tags, archived, activates_at, expires_at, created, updated, clicks, last_clicked FROM links WHERE shortcode = ? AND owner_id = ?`,
+		[shortcode, ownerId],
 	);
 	if (!r) return withCors(env, new Response('Link not found', { status: 404 }), request);
 	const linkData = {
@@ -470,7 +513,7 @@ export async function getLink(env, shortcode, request) {
 	return withCors(env, new Response(JSON.stringify(linkData), { headers: { 'Content-Type': 'application/json' } }), request);
 }
 
-export async function bulkCreateLinks(request, env) {
+export async function bulkCreateLinks(request, env, ownerId) {
 	try {
 		const { rateLimits } = getConfig(env);
 		if (
@@ -507,54 +550,59 @@ export async function bulkCreateLinks(request, env) {
 				request,
 			);
 		}
+		// H15: validate all items, then issue one batched INSERT-OR-IGNORE and a
+		// single follow-up SELECT to detect which inserts conflicted.
 		const results = { created: [], conflicts: [], errors: [] };
+		const valid = [];
 		for (const item of items) {
+			let { shortcode, url, description = '', redirectType = 301 } = item || {};
+			shortcode = sanitizeInput(shortcode);
+			url = sanitizeInput(url);
+			description = sanitizeInput(description);
+			const shortcodeError = validateShortcode(shortcode);
+			if (shortcodeError) { results.errors.push({ shortcode, error: shortcodeError }); continue; }
+			const urlError = validateUrl(url);
+			if (urlError) { results.errors.push({ shortcode, error: urlError }); continue; }
+			const descriptionError = validateDescription(description);
+			if (descriptionError) { results.errors.push({ shortcode, error: descriptionError }); continue; }
+			const redirectTypeError = validateRedirectType(redirectType);
+			if (redirectTypeError) { results.errors.push({ shortcode, error: redirectTypeError }); continue; }
+			valid.push({
+				shortcode,
+				url: url.trim(),
+				description: description ? description.trim() : '',
+				redirectType: redirectType || 301,
+				created: new Date().toISOString(),
+				updated: new Date().toISOString(),
+				clicks: 0,
+			});
+		}
+
+		if (valid.length > 0) {
+			const { dbBatch } = await import('../db.js');
 			try {
-				let { shortcode, url, description = '', redirectType = 301 } = item;
-				shortcode = sanitizeInput(shortcode);
-				url = sanitizeInput(url);
-				description = sanitizeInput(description);
-				const shortcodeError = validateShortcode(shortcode);
-				if (shortcodeError) {
-					results.errors.push({ shortcode, error: shortcodeError });
-					continue;
-				}
-				const urlError = validateUrl(url);
-				if (urlError) {
-					results.errors.push({ shortcode, error: urlError });
-					continue;
-				}
-				const descriptionError = validateDescription(description);
-				if (descriptionError) {
-					results.errors.push({ shortcode, error: descriptionError });
-					continue;
-				}
-				const redirectTypeError = validateRedirectType(redirectType);
-				if (redirectTypeError) {
-					results.errors.push({ shortcode, error: redirectTypeError });
-					continue;
-				}
-				const existing = await dbGet(env, `SELECT shortcode FROM links WHERE shortcode = ?`, [shortcode]);
-				if (existing) {
-					results.conflicts.push(shortcode);
-					continue;
-				}
-				const linkData = {
-					url: url.trim(),
-					description: description ? description.trim() : '',
-					redirectType: redirectType || 301,
-					created: new Date().toISOString(),
-					updated: new Date().toISOString(),
-					clicks: 0,
-				};
-				await dbRun(
+				await dbBatch(
 					env,
-					`INSERT INTO links (shortcode, url, description, redirect_type, tags, archived, activates_at, expires_at, created, updated, clicks, last_clicked) VALUES (?, ?, ?, ?, '[]', 0, NULL, NULL, ?, ?, 0, NULL)`,
-					[shortcode, linkData.url, linkData.description, linkData.redirectType, linkData.created, linkData.updated],
+					valid.map((v) => ({
+						sql: `INSERT OR IGNORE INTO links (shortcode, owner_id, url, description, redirect_type, tags, archived, activates_at, expires_at, created, updated, clicks, last_clicked) VALUES (?, ?, ?, ?, ?, '[]', 0, NULL, NULL, ?, ?, 0, NULL)`,
+						bindings: [v.shortcode, ownerId, v.url, v.description, v.redirectType, v.created, v.updated],
+					})),
 				);
-				results.created.push({ shortcode, ...linkData });
+				// Detect which actually inserted: anything still present in DB owned by this user is created.
+				// Anything in `valid` but missing from owner's rows conflicted (already existed under another owner or same).
+				const placeholders = valid.map(() => '?').join(',');
+				const ownedRows = await dbAll(
+					env,
+					`SELECT shortcode FROM links WHERE shortcode IN (${placeholders}) AND owner_id = ?`,
+					[...valid.map((v) => v.shortcode), ownerId],
+				);
+				const ownedSet = new Set(ownedRows.map((r) => r.shortcode));
+				for (const v of valid) {
+					if (ownedSet.has(v.shortcode)) results.created.push(v);
+					else results.conflicts.push(v.shortcode);
+				}
 			} catch (err) {
-				results.errors.push({ shortcode: item?.shortcode, error: err.message });
+				for (const v of valid) results.errors.push({ shortcode: v.shortcode, error: err.message });
 			}
 		}
 		return withCors(env, new Response(JSON.stringify(results), { status: 207, headers: { 'Content-Type': 'application/json' } }), request);
@@ -567,36 +615,21 @@ export async function bulkCreateLinks(request, env) {
 	}
 }
 
-export async function listLinks(env, request) {
+export async function listLinks(env, request, ownerId) {
 	const url = new URL(request.url);
 	const limit = Math.min(Math.max(parseInt(url.searchParams.get('limit') || '100', 10), 1), 1000);
-	const cursor = url.searchParams.get('cursor') || null; // cursor is last shortcode
+	const cursor = url.searchParams.get('cursor') || null;
 	const rows = await dbAll(
 		env,
 		cursor
-			? `SELECT * FROM links WHERE shortcode > ? ORDER BY shortcode ASC LIMIT ?`
-			: `SELECT * FROM links ORDER BY shortcode ASC LIMIT ?`,
-		cursor ? [cursor, limit + 1] : [limit + 1],
+			? `SELECT ${LINK_PUBLIC_COLUMNS} FROM links WHERE owner_id = ? AND shortcode > ? ORDER BY shortcode ASC LIMIT ?`
+			: `SELECT ${LINK_PUBLIC_COLUMNS} FROM links WHERE owner_id = ? ORDER BY shortcode ASC LIMIT ?`,
+		cursor ? [ownerId, cursor, limit + 1] : [ownerId, limit + 1],
 	);
 	const hasMore = rows.length > limit;
 	const pageRows = hasMore ? rows.slice(0, limit) : rows;
 	const links = {};
-	for (const r of pageRows) {
-		links[r.shortcode] = {
-			url: r.url,
-			description: r.description || '',
-			redirectType: r.redirect_type || 301,
-			tags: safeParseJsonArray(r.tags),
-			archived: !!r.archived,
-			activatesAt: r.activates_at || null,
-			expiresAt: r.expires_at || null,
-			created: r.created,
-			updated: r.updated,
-			clicks: r.clicks || 0,
-			lastClicked: r.last_clicked || null,
-			passwordEnabled: !!r.password_enabled,
-		};
-	}
+	for (const r of pageRows) links[r.shortcode] = rowToLink(r);
 	const nextCursor = hasMore ? pageRows[pageRows.length - 1].shortcode : null;
 	const body = { links, cursor: nextCursor };
 	return withCors(env, new Response(JSON.stringify(body), { headers: { 'Content-Type': 'application/json' } }), request);

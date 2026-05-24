@@ -48,17 +48,28 @@ export async function hashPassword(password, salt = null) {
 }
 
 /**
- * Verify a password against a stored hash
- * @param {string} password - Plain text password to verify
- * @param {string} storedHash - Stored hash from database
- * @param {string} salt - Salt used for hashing
- * @returns {Promise<boolean>}
+ * Constant-time comparison of two hex-encoded strings.
+ * Returns false (without short-circuiting) if lengths differ.
+ * Prevents timing attacks that could leak how many leading bytes of a hash matched.
+ */
+export function timingSafeEqualHex(a, b) {
+	if (typeof a !== 'string' || typeof b !== 'string') return false;
+	if (a.length !== b.length) return false;
+	let diff = 0;
+	for (let i = 0; i < a.length; i++) {
+		diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+	}
+	return diff === 0;
+}
+
+/**
+ * Verify a password against a stored hash using constant-time comparison.
  */
 export async function verifyPassword(password, storedHash, salt) {
 	try {
 		const { hash } = await hashPassword(password, salt);
-		return hash === storedHash;
-	} catch (error) {
+		return timingSafeEqualHex(hash, storedHash);
+	} catch {
 		return false;
 	}
 }

@@ -98,7 +98,9 @@ console.error('Admin app not built yet. Run "npm -w admin run build" first.');
   }
 
   // Get all files from dist directory
-  const files = getAllFiles(DIST_DIR);
+  // M11: source maps live on disk for debugging but never get embedded into
+  // the Worker bundle (would inflate it by ~MBs and isn't served anywhere).
+  const files = getAllFiles(DIST_DIR).filter((f) => !f.path.endsWith('.map'));
 
   console.log(`Found ${files.length} files to embed`);
 
