@@ -150,32 +150,20 @@ export function getClientIP(request) {
 	return request.headers.get('CF-Connecting-IP') || 'unknown';
 }
 
-// Tracks last cleanup timestamp per Worker isolate (H7: replaces Math.random schedule).
-let lastCleanupAt = 0;
-const CLEANUP_INTERVAL_MS = 60_000;
-
-function maybeScheduleCleanup(env, ctx) {
-	// Only fire cleanup when we have an ExecutionContext to anchor it via
-	// waitUntil. Without one, the promise would float - breaking test
-	// isolation in Miniflare and risking termination by the Workers runtime.
-	// Cron/test paths can call cleanupExpiredCounters directly if needed.
-	if (!ctx || typeof ctx.waitUntil !== 'function') return;
-	const now = Date.now();
-	if (now - lastCleanupAt < CLEANUP_INTERVAL_MS) return;
-	lastCleanupAt = now;
-	ctx.waitUntil(
-		cleanupExpiredCounters(env).catch((err) => {
-			logger.error('cleanup_expired_counters_failed', { error: err?.message });
-		}),
-	);
-}
-
 /**
- * Persistent D1-based rate limiter with automatic cleanup.
- * Pass `ctx` (Cloudflare's ExecutionContext) to allow the periodic cleanup
- * to be tracked via ctx.waitUntil instead of becoming a floating promise. C10.
+ * Persistent D1-based rate limiter.
+ *
+ * S2: prior versions opportunistically fired `cleanupExpiredCounters` from
+ * the hot path on a 60s interval (`maybeScheduleCleanup`) so that the
+ * counters table didn't accumulate stale rows between cron runs. That
+ * approach added a `ctx.waitUntil` tax to every rate-limited endpoint call
+ * and risked floating promises in non-runtime contexts (tests, scripts).
+ *
+ * Counter cleanup is now exclusively the cron handler's job (see
+ * `scheduled` in src/index.js). Callers that still pass `ctx` in opts are
+ * fine - it's ignored, since this function no longer needs it.
  */
-export async function isRateLimitedPersistent(env, request, { key = 'default', limit = 100, windowMs = 3600000, ctx } = {}) {
+export async function isRateLimitedPersistent(env, request, { key = 'default', limit = 100, windowMs = 3600000 } = {}) {
 	try {
 		const now = Date.now();
 		const bucket = Math.floor(now / windowMs);
@@ -191,7 +179,6 @@ export async function isRateLimitedPersistent(env, request, { key = 'default', l
 			[name, expiresAt]
 		);
 		const value = (rows && rows[0] && (rows[0].value ?? rows[0].VALUE)) || 0;
-		maybeScheduleCleanup(env, ctx);
 		return Number(value) > Number(limit);
 	} catch (e) {
 		logger.warn('rate_limit_d1_fallback', { key, error: e?.message });
@@ -231,6 +218,32 @@ export async function cleanupExpiredCounters(env) {
 	const now = new Date().toISOString();
 	const { dbRun } = await import('./db.js');
 	await dbRun(env, `DELETE FROM counters WHERE expires_at IS NOT NULL AND expires_at < ?`, [now]);
+}
+
+/**
+ * S2: hard-delete links whose `expires_at` timestamp is in the past.
+ *
+ * `expires_at` is `TEXT` (ISO 8601 datetime per schema.sql, e.g.
+ * "2024-01-15T12:00:00.000Z"). Optional - links without a TTL store NULL
+ * or empty string ('' is also tolerated because some legacy rows from
+ * earlier admin UI versions wrote '' instead of leaving it NULL).
+ *
+ * Mirrors the existing `purgeOldAnalytics` policy: a hard DELETE rather
+ * than soft-archive. The `links.archived` flag exists for user-initiated
+ * archiving (UI: "Archive link"), which is semantically distinct from
+ * "expired and should disappear". Archived links remain queryable; expired
+ * ones are pruned to keep the table small.
+ *
+ * Idempotent and safe to run on every cron tick.
+ */
+export async function purgeExpiredLinks(env) {
+	const now = new Date().toISOString();
+	const { dbRun } = await import('./db.js');
+	await dbRun(
+		env,
+		`DELETE FROM links WHERE expires_at IS NOT NULL AND expires_at != '' AND expires_at < ?`,
+		[now],
+	);
 }
 
 
