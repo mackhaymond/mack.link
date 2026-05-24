@@ -9,21 +9,30 @@ guidelines in detail.
 ```bash
 npm install
 npm run dev:ai          # zero-click dev mode (auth disabled)
-npm run validate:local  # 19/19 must pass with dev:ai running
+npm run validate:local  # all 15 direct-mode tests must pass with dev:ai running
 npm run lint && npm test && npm run build
 ```
 
 - Worker: http://localhost:8787
 - Admin:  http://localhost:5173/admin
 
+## Auth (Sprint 2a)
+
+Production auth is handled by **Cloudflare Access** at the edge.
+`/admin*` and `/api/*` are gated by a single Access app (Allow user's
+GitHub email); the Worker just verifies the `Cf-Access-Jwt-Assertion`
+header. See [SECURITY.md](./SECURITY.md) for the full boundary model.
+
 ## Dev auth (defense in depth)
 
-The dev bypass requires **both** `AUTH_DISABLED=true` **and**
-`ENVIRONMENT=development` in `worker/.dev.vars` (see `.dev.vars.example`).
-Setting only one of them does nothing — defense in depth so production can
-never accidentally enter dev mode. The Admin dev server sends
-`x-dev-auth: 1` and the Worker also requires the request Host to be
-localhost / 127.0.0.1.
+The dev bypass requires **all three** of:
+1. `AUTH_DISABLED=true` (worker/.dev.vars)
+2. `ENVIRONMENT=development` (worker/.dev.vars)
+3. request URL host is `localhost` / `127.0.0.1`
+
+Production deployments never set `ENVIRONMENT`, so the bypass is
+structurally impossible to enable in prod. See `.dev.vars.example` for
+the local values.
 
 ## Schema migrations
 
@@ -42,4 +51,6 @@ with the latest migration state.
 - Use `npm run logs:tail` for debugging dev sessions.
 - Commit in logical chunks; rebase over merge; push when a feature is
   complete. Don't deploy from CI for unreviewed branches.
-- For CI / headless tests, POST `/api/auth/dev/login` with `x-dev-auth: 1`.
+- For CI / headless tests, run against `npm run dev:ai` — the dev
+  bypass returns a mock user on the first localhost request, no login
+  endpoint to call. The old `POST /api/auth/dev/login` flow is gone.

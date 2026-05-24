@@ -30,12 +30,12 @@ This command:
 npm run dev:ai
 ```
 
-This is the OAuth-disabled dev mode specifically designed for AI agents and automated UI development:
+This is the Access-bypass dev mode specifically designed for AI agents and automated UI development:
 
-This starts the Worker with AUTH_DISABLED=true and the Admin with VITE_AUTH_DISABLED=true. Dev auth is controlled exclusively by AUTH_DISABLED on the Worker; client flags cannot enable it. In this mode:
-- The Admin login button calls a dev-only endpoint: `POST /api/auth/dev/login` to issue a session cookie and return the mock user.
-- If the endpoint fails (e.g., AUTH_DISABLED is not set), the Admin falls back to the normal GitHub OAuth redirect.
-- Use this for Playwright E2E flows to avoid cross-origin OAuth redirects.
+This starts the Worker with AUTH_DISABLED=true (plus ENVIRONMENT=development) and the Admin with VITE_AUTH_DISABLED=true. Dev auth is controlled by the Worker side; client flags only adjust the SPA's behavior. In this mode:
+- The Worker returns a mock user for any localhost request — no login flow needed; the React app loads straight into the dashboard.
+- In production, Cloudflare Access authenticates users at the edge before they reach the Worker; the Worker just verifies the `Cf-Access-Jwt-Assertion` header. See [SECURITY.md](../SECURITY.md) for the full boundary model.
+- Use this for Playwright E2E flows to avoid Access-page redirects.
 
 - Bootstrap, build, and test the repository:
   - `npm install` -- takes 25 seconds. NEVER CANCEL.
@@ -57,21 +57,21 @@ This starts the Worker with AUTH_DISABLED=true and the Admin with VITE_AUTH_DISA
 
 ## Validation
 
-Dev-auth sanity checks (run when AUTH_DISABLED=true):
-- `curl -s -o /dev/null -w "%{http_code}\n" -X POST http://localhost:8787/api/auth/dev/login` should return 200.
-- Visiting http://localhost:5173/admin after the POST should land on the dashboard without redirects.
+Dev-auth sanity checks (run when AUTH_DISABLED=true && ENVIRONMENT=development):
+- `curl -s http://localhost:8787/api/user` should return the mock user JSON `{"login":"ai-dev",...}`.
+- Visiting http://localhost:5173/admin should land on the dashboard without redirects.
 
 Production sanity checks (AUTH_DISABLED not set):
-- `POST /api/auth/dev/login` should return 403.
-- Visiting /admin shows GitHub OAuth button and requires normal authentication.
+- Visiting /admin redirects (302) to `*.cloudflareaccess.com` for login.
+- `npm run validate:prod` confirms Cloudflare Access is intercepting `/admin*` and `/api/*`.
 
 - ALWAYS manually validate any changes by running the complete application:
   1. **For AI/Copilot agents**: Run `npm run dev:ai` to start both servers with auth disabled.
-  2. **For manual development**: Run `npm run dev` to start both servers.
+  2. **For manual development**: Run `npm run dev` to start both servers (in prod, OAuth is now done by Cloudflare Access — local dev still uses the bypass).
   3. Open http://localhost:8787 in browser - verify homepage loads with "Sign in to Admin" button.
-  4. **For admin UI development**: Open http://localhost:5173/admin - verify admin interface loads directly with auth disabled (AI mode) or shows login page (manual mode).
-  5. **For embedded admin testing**: Open http://localhost:8787/admin - verify embedded admin login page loads.
-  6. Run `npm run validate:local` - ALL 19 tests must pass.
+  4. **For admin UI development**: Open http://localhost:5173/admin - verify admin interface loads directly with auth disabled.
+  5. **For Static Assets binding testing**: Open http://localhost:8787/admin - verify the SPA loads via the worker's `env.ASSETS` binding.
+  6. Run `npm run validate:local` - all direct-mode tests must pass (15/15).
 
 - ALWAYS run `npm run lint` before committing. The pre-commit hook runs linting automatically.
 
@@ -91,10 +91,10 @@ Mack.link is a URL shortener using **npm workspaces** with two main components:
 1. **Worker** (`/worker`): Cloudflare Worker serving redirects, API endpoints, and embedded React app
 2. **Admin** (`/admin`): React admin panel that gets built and embedded into the worker
 
-**Critical Build Process:**
-1. Admin React app builds to `/admin/dist` (Vite build ~8 seconds)
-2. Build script embeds admin assets into `/worker/src/admin-assets.js` (~1 second)
-3. Worker serves everything: redirects, API, and embedded admin UI
+**Critical Build Process (after S1):**
+1. Admin React app builds to `/admin/dist` (Vite build ~2 seconds)
+2. Cloudflare's Static Assets binding (`env.ASSETS`) serves `admin/dist/` directly from the CDN — the worker bundle no longer embeds the admin SPA
+3. Worker serves: short-link redirects, `/api/*`, and a thin delegator at `/admin/*` that forwards to `env.ASSETS.fetch()`
 
 ## Common Tasks
 
@@ -131,10 +131,11 @@ mack.link/
 ├── worker/                    # Cloudflare Worker backend
 │   ├── src/
 │   │   ├── index.js          # Main worker entry point
+│   │   ├── access.js         # Cloudflare Access JWT verification (Sprint 2a)
+│   │   ├── auth.js           # authenticateRequest / requireAuth
 │   │   ├── routes/           # API and admin route handlers
-│   │   ├── admin-assets.js   # Auto-generated embedded React app
 │   │   └── schema.sql        # Database schema
-│   └── wrangler.jsonc        # Worker configuration
+│   └── wrangler.jsonc        # Worker configuration (Static Assets binding + Access vars)
 ├── admin/                     # React admin panel frontend
 │   ├── src/
 │   │   ├── components/       # React components
@@ -151,10 +152,10 @@ mack.link/
 After making changes, ALWAYS test these scenarios:
 1. **Homepage loads**: Visit http://localhost:8787, verify "Sign in to Admin" button appears
 2. **Admin UI development**: Visit http://localhost:5173/admin for direct admin UI access during development
-3. **Embedded admin loads**: Visit http://localhost:8787/admin, verify embedded admin interface appears  
-4. **API accessibility**: Verify http://localhost:8787/api/links returns 401 (not 404)
+3. **Admin loads via Static Assets**: Visit http://localhost:8787/admin, verify the admin SPA appears (served via `env.ASSETS` binding from `admin/dist/`)
+4. **API accessibility**: Verify http://localhost:8787/api/links returns 200 in dev:ai mode (mock user) or 401 in prod (no Access JWT)
 5. **Asset serving**: Verify CSS/JS assets load from /admin/assets/ paths
-6. **Validation passes**: Run `npm run validate:local` - must show "19 Passed, 0 Failed"
+6. **Validation passes**: Run `npm run validate:local` - must end with 0 failed
 
 ### Troubleshooting
 
@@ -184,13 +185,13 @@ After making changes, ALWAYS test these scenarios:
 - Never commit secrets to Git
 - Husky pre-commit hook runs linting automatically
 - Run `npm run security:audit` to check for vulnerabilities (takes 3 seconds)
-- Uses GitHub OAuth for admin authentication
-- Admin assets are embedded in worker for security
+- Production auth: Cloudflare Access (GitHub OAuth done at the edge, not in the Worker); see SECURITY.md
+- Admin assets served via Cloudflare Static Assets binding (S1), not embedded in the Worker bundle
 
 ### Performance Expectations
 - Total setup time: ~35 seconds (install + build)
 - Development startup: ~10 seconds
-- Validation suite: ~1 second for 19 tests
+- Validation suite: ~1 second (15 direct-mode tests in local, 8 + 1 warn access-mode tests in prod)
 - The application loads quickly: homepage in <100ms, admin panel in <200ms
 
 ## Validation Requirements
@@ -199,7 +200,7 @@ When making any changes:
 
 1. **Build successfully**: `npm run build` must complete without errors
 2. **Pass linting**: `npm run lint` must pass with no errors
-3. **Pass validation**: `npm run validate:local` must show 19/19 tests passing
+3. **Pass validation**: `npm run validate:local` must end with 0 failures (currently 15 tests in direct mode)
 4. **Manual verification**: Both homepage and admin panel must load and display correctly in browser
 5. **Assets working**: CSS and JavaScript assets must load from /admin/assets/ paths
 

@@ -3,32 +3,20 @@ import { createRoot } from 'react-dom/client'
 import './index.css'
 import App from './App.jsx'
 import { createBrowserRouter, RouterProvider } from 'react-router-dom'
-import { AuthCallback } from './components/AuthCallback.jsx'
-import { LoginScreen } from './components/LoginScreen.jsx'
 import { QueryProvider } from './providers/QueryProvider.jsx'
 import { ErrorBoundary } from './components/ui/ErrorBoundary.jsx'
 
 import { ThemeProvider } from './providers/ThemeProvider.jsx'
 
+// Sprint 2a (A3): /login and /auth/callback routes are gone. Cloudflare
+// Access shows its own login UI before the SPA ever loads, and there's
+// no OAuth callback for the SPA to handle anymore. App is the only
+// route; the React Router basename keeps URLs under /admin.
 const router = createBrowserRouter(
   [
     {
       path: '/',
       element: <App />,
-    },
-    {
-      path: '/login',
-      element: <LoginScreen />,
-    },
-    {
-      path: '/auth/callback',
-      element: (
-        <AuthCallback
-          onAuthSuccess={() => {
-            // Navigation will be handled by the AuthCallback component itself
-          }}
-        />
-      ),
     },
   ],
   {

@@ -5,7 +5,6 @@ import { CreateLinkForm } from './components/CreateLinkForm'
 import { Header } from './components/Header'
 // Lazy-load Analytics to reduce initial mobile load
 const Analytics = lazy(() => import('./components/Analytics').then(m => ({ default: m.Analytics })))
-import { LoginScreen } from './components/LoginScreen'
 
 import { authService } from './services/auth'
 import { Plus, BarChart3, Link as LinkIcon } from 'lucide-react'
@@ -34,7 +33,12 @@ function App() {
   const [filteredLinks, setFilteredLinks] = useState({})
   const [showCreateForm, setShowCreateForm] = useState(false)
   const [showKeyboardHelp, setShowKeyboardHelp] = useState(false)
-  const [isAuthenticated, setIsAuthenticated] = useState(authService.isAuthenticated())
+  // Sprint 2a (A3): auth state is a 3-value lattice:
+  //   undefined = still resolving identity (loader)
+  //   null      = resolved, not authenticated (Access bounce courtesy UI)
+  //   object    = resolved, authenticated (render the app)
+  const [user, setUser] = useState(authService.getUser())
+  const isAuthenticated = !!user
   const [currentView, setCurrentView] = useState('links') // 'links' or 'analytics'
   const [documentVisible, setDocumentVisible] = useState(
     typeof document === 'undefined' ? true : !document.hidden,
@@ -83,24 +87,18 @@ function App() {
   const deleteLinkMutation = useDeleteLink()
   const bulkDeleteMutation = useBulkDeleteLinks()
 
-  // Listen for authentication state changes (no polling).
-  // H9: also handle auth:unauthenticated (a 401/403 from the API surfaces here
-  // instead of a hard page reload) and auth:logout-failed (toast for failed
-  // server-side logout).
+  // Sprint 2a (A3): bootstrap identity from authService.resolveUser() on
+  // mount. Replaces the old auth:change / auth:unauthenticated /
+  // auth:logout-failed event-bus pattern - state ownership is now in this
+  // single useState, not scattered across CustomEvents.
   useEffect(() => {
-    const onAuthChange = () => setIsAuthenticated(authService.isAuthenticated())
-    const onUnauthenticated = () => setIsAuthenticated(false)
-    const onLogoutFailed = (e) => {
-      console.warn('Logout failed on the server (local session cleared anyway):', e?.detail?.error)
-    }
-    window.addEventListener('auth:change', onAuthChange)
-    window.addEventListener('auth:unauthenticated', onUnauthenticated)
-    window.addEventListener('auth:logout-failed', onLogoutFailed)
-    return () => {
-      window.removeEventListener('auth:change', onAuthChange)
-      window.removeEventListener('auth:unauthenticated', onUnauthenticated)
-      window.removeEventListener('auth:logout-failed', onLogoutFailed)
-    }
+    let cancelled = false
+    authService.resolveUser().then((u) => {
+      if (!cancelled) setUser(u)
+    }).catch(() => {
+      if (!cancelled) setUser(null)
+    })
+    return () => { cancelled = true }
   }, [])
 
   const handleCreateLink = useCallback(
@@ -173,9 +171,33 @@ function App() {
     },
   })
 
-  // Show login screen if not authenticated
-  if (!isAuthenticated) {
-    return <LoginScreen />
+  // Sprint 2a (A3): if Cloudflare Access is in front, the user has already
+  // logged in before this SPA loads. The "not authenticated" state below
+  // is a courtesy fallback for two cases:
+  //   1. Someone landed on the *.workers.dev URL directly (Access doesn't
+  //      gate that backend) - the /admin link in the bounce button kicks
+  //      them to the prod URL where Access challenges them.
+  //   2. The Access cookie has expired mid-session - clicking the button
+  //      re-triggers Access via /admin same-origin.
+  // In normal prod use this is never seen; in dev:ai the bootstrap returns
+  // the mock user synchronously enough that this also rarely renders.
+  if (user === null) {
+    return (
+      <div className="min-h-screen bg-gray-50 dark:bg-gray-900 flex items-center justify-center px-4 transition-colors">
+        <div className="max-w-md w-full space-y-6 text-center">
+          <h1 className="text-2xl font-bold text-gray-900 dark:text-white">link.mackhaymond.co</h1>
+          <p className="text-sm text-gray-600 dark:text-gray-300">
+            You are not signed in. The admin panel is protected by Cloudflare Access.
+          </p>
+          <a
+            href="/admin"
+            className="inline-flex justify-center py-3 px-6 rounded-md text-white bg-gray-900 dark:bg-gray-700 hover:bg-gray-800 dark:hover:bg-gray-600 transition-colors"
+          >
+            Sign in
+          </a>
+        </div>
+      </div>
+    )
   }
 
   // Filter results are managed by LinkSearch via onFilteredResults
@@ -191,7 +213,7 @@ function App() {
             Skip to main content
           </a>
 
-          <Header />
+          <Header user={user} />
 
           <main
             id="main-content"
@@ -238,7 +260,7 @@ function App() {
           Skip to main content
         </a>
 
-        <Header onShowShortcuts={() => setShowKeyboardHelp(true)} />
+        <Header user={user} onShowShortcuts={() => setShowKeyboardHelp(true)} />
 
         <main id="main-content" className="max-w-7xl mx-auto px-3 xs:px-4 sm:px-6 lg:px-8 pt-3 xs:pt-4 sm:pt-6 lg:pt-8 content-pb-safe sm:pb-8" role="main">
           <div className="sm:flex sm:items-center sm:justify-between mb-6 sm:mb-8">

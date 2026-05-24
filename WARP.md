@@ -95,27 +95,31 @@ Access:
 - Test redirects: http://localhost:8787/{shortcode}
 - Password-protected links: http://localhost:8787/{shortcode} (enter password when prompted)
 
+### Auth model (Sprint 2a)
+
+Production auth is Cloudflare Access at the edge. The Worker verifies
+the `Cf-Access-Jwt-Assertion` header on every `/admin*` and `/api/*`
+request (see `worker/src/access.js`). Short-link redirects and the
+homepage are not Access-gated. See [SECURITY.md](./SECURITY.md) for the
+boundary table.
+
 ### Agents & AI Dev Mode
 
 Zero-click dev auth for Admin UI development:
 - Run: `npm run dev:ai` (starts Worker on 8787 and Admin on 5173)
-- Admin sets `VITE_AUTH_DISABLED=true` and sends `x-dev-auth: 1` on API requests
-- Worker recognizes the header only when `Host` is `localhost`/`127.0.0.1` and returns a mock user
-- Authorized-user checks are skipped in this local mode; production remains unaffected
-
-Optional programmatic login remains available:
-```bash
-curl -i -X POST \
-  -H "Content-Type: application/json" \
-  -H "x-dev-auth: 1" \
-  http://localhost:8787/api/auth/dev/login
-```
+- Admin sets `VITE_AUTH_DISABLED=true`; the Worker has `AUTH_DISABLED=true`
+  and `ENVIRONMENT=development` in `worker/.dev.vars`.
+- Worker returns a mock user iff all three of (`AUTH_DISABLED`,
+  `ENVIRONMENT=development`, request URL host is localhost) hold —
+  defense in depth so production can never accidentally bypass Access.
+- Authorized-user checks are skipped in this local mode; production
+  remains unaffected.
 
 Agent workflow guidance:
 - Long-running commands: before starting `npm run dev:ai`, specify what to test (e.g., visit `/admin`, create a link, verify redirect). Await user “continue” before running.
 - Prefer rebase over merge for PRs; commit in logical chunks.
 - Tail logs locally when needed: `npm run logs:tail` (avoid tailing production unless asked).
-- If `/api/user` returns 403, ensure the request includes `x-dev-auth: 1` and uses local Host.
+- If `/api/user` returns 401 locally, check that `worker/.dev.vars` has both `AUTH_DISABLED=true` and `ENVIRONMENT=development`.
 
 ## Architecture Overview
 
@@ -160,12 +164,11 @@ This project runs as a single Cloudflare Worker that serves an embedded React ad
 - **Entry Point**: `src/index.js` - Main worker with request lifecycle management
 - **Admin UI**: `src/routes/admin.js` is a thin delegator (~10 LOC) that strips the `/admin` URL prefix and forwards to `env.ASSETS.fetch()` (Cloudflare Static Assets binding, configured in `wrangler.jsonc` with `directory: "../admin/dist"`). S1 replaced the previous embed pipeline so the React build is served by Cloudflare's CDN instead of being inlined into the Worker JS bundle.
 - **Routing**: `src/routes.js` handles request dispatching between admin, redirects, and API
-- **Authentication**: `src/auth.js` manages GitHub OAuth and session verification
+- **Authentication**: `src/access.js` verifies the Cloudflare Access JWT (Sprint 2a); `src/auth.js` wraps that with dev bypass + `requireAuth` helper. No more in-Worker OAuth or session cookies.
 - **Password System**: `src/password.js` provides PBKDF2 hashing with Web Crypto API
 - **Database**: `src/db.js` abstracts Cloudflare D1 operations for link storage
 - **API Router**: `src/routes/routerApi.js` handles all `/api/*` endpoints
 - **Redirect Handler**: `src/routes/redirect.js` processes shortcode redirects with password protection
-- **Session Management**: `src/session.js` handles JWT-based session cookies with secure HttpOnly settings
 
 **React Admin Panel** (`/admin/`)
 - **Main App**: `src/App.jsx` with tabbed interface (Links/Analytics)
@@ -173,7 +176,7 @@ This project runs as a single Cloudflare Worker that serves an embedded React ad
   - `src/providers/QueryProvider.jsx` - React Query configuration
   - `src/providers/ThemeProvider.jsx` - Dark/light mode support
 - **Router**: Client-side routing with React Router (basename: `/admin`)
-- **Authentication Flow**: `src/components/AuthCallback.jsx` handles GitHub OAuth callback
+- **Identity**: `src/services/auth.js` reads identity from `/cdn-cgi/access/get-identity` (Cloudflare-managed endpoint) in prod, falls back to a hardcoded mock user in dev:ai mode (Sprint 2a A3)
 - **Link Management**: 
   - `src/components/LinkList.jsx` - Display and edit links
   - `src/components/CreateLinkForm.jsx` - Create new links with advanced options
@@ -188,14 +191,14 @@ This project runs as a single Cloudflare Worker that serves an embedded React ad
 ### Data Flow
 
 1. **Redirect Flow**: `/{shortcode}` → Worker → Password Check → D1 lookup → HTTP redirect
-2. **API Flow**: Management UI → `/api/*` → Authentication → D1 operations → Response
-3. **Auth Flow**: GitHub OAuth → Session JWT → HttpOnly cookie → API access
-4. **Password Flow**: Password form → Web Crypto PBKDF2 hash → Verification → Session token
+2. **API Flow**: Management UI → Cloudflare Access (verifies user identity) → Worker → JWT verify → D1 operations → Response
+3. **Auth Flow**: User hits `/admin` → Cloudflare Access challenges (GitHub OAuth at the edge) → on success, Access proxies the request with `Cf-Access-Jwt-Assertion` header → Worker verifies the JWT against the team JWKS
+4. **Password Flow**: Password form → Web Crypto PBKDF2 hash → Verification → Session token (this is the short-link password feature, separate from admin auth)
 
 ### Storage Strategy
 
 - **Primary Storage**: Cloudflare D1 (SQLite) for link data and analytics
-- **Session Storage**: JWT tokens in HttpOnly cookies
+- **Admin Session**: managed by Cloudflare Access (CF_Authorization cookie, set by Access at the edge); the Worker has no session storage
 - **Password Storage**: PBKDF2 hashed passwords (format: `salt:hash`)
 - **Caching**: React Query for frontend state management with stale-time tuning
 
@@ -213,12 +216,12 @@ This project runs as a single Cloudflare Worker that serves an embedded React ad
 - API responses follow consistent error format with proper HTTP status codes
 - Password verification has secure failure handling with rate limiting
 
-### Authentication Architecture
-- GitHub OAuth for user identity
-- Server-side session management with JWT
-- HttpOnly cookies for security (no client-side token exposure)
-- Single authorized user restriction via `AUTHORIZED_USER` environment variable
-- Session expiration configurable via `SESSION_MAX_AGE`
+### Authentication Architecture (Sprint 2a)
+- Cloudflare Access at the edge: GitHub OAuth handled by Cloudflare, not the Worker
+- Worker verifies `Cf-Access-Jwt-Assertion` RS256 JWT on every protected request
+- JWKS cached per-isolate for 1h; CF rotates Access keys every 6 weeks
+- `AUTHORIZED_USER` env var preserved as belt-and-suspenders (rejects identities Access lets through if its policy was ever misconfigured)
+- See [SECURITY.md](./SECURITY.md) for the path-coverage table and dev-bypass model
 
 ### Password Protection System
 - Links can be password-protected using the admin interface

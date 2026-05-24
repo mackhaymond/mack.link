@@ -7,13 +7,77 @@ Open a private security advisory at
 security@mackhaymond.co. Please include reproduction steps and the commit /
 deployment URL you tested against.
 
+## Authentication boundary (Sprint 2a)
+
+Admin / API authentication is enforced by **Cloudflare Access** at the
+edge, not by the Worker. The Worker's only auth responsibility is to
+verify the `Cf-Access-Jwt-Assertion` header that Access injects on every
+request it proxies.
+
+Path coverage (configured in the Cloudflare Zero Trust dashboard, not
+in this repo):
+
+| Path                       | Access app | Worker auth                        |
+|----------------------------|------------|------------------------------------|
+| `/`                        | none       | none (public marketing page)       |
+| `/{shortcode}`             | none       | none (public short-link redirect)  |
+| `/api/password/verify`     | bypass     | none (public — anonymous visitors  |
+|                            |            | submit password for protected links)|
+| `/admin/*`                 | protected  | verify `Cf-Access-Jwt-Assertion`   |
+| `/api/*` (everything else) | protected  | verify `Cf-Access-Jwt-Assertion`   |
+
+JWT verification (`worker/src/access.js`): RS256, JWKS-cached
+per-isolate for 1h, checks `iss` matches `TEAM_DOMAIN`, `aud` includes
+`POLICY_AUD`, `exp`/`nbf` within bounds. JWKS fetched lazily from
+`<TEAM_DOMAIN>/cdn-cgi/access/certs`.
+
+Belt-and-suspenders: the Worker also rejects (403) any verified identity
+whose login doesn't match `AUTHORIZED_USER`. Access's Allow policy
+should already prevent this, but if the policy is ever disabled while
+the app stays Required, the Worker still rejects unknown identities.
+
+`*.workers.dev` bypass: the workers.dev backend URL is NOT gated by
+Access. JWT verification rejects unauthenticated requests there too
+(no `Cf-Access-Jwt-Assertion` header → 401 from the Worker).
+
+### Dev bypass (local-only, defense in depth)
+
+`npm run dev:ai` mode where Access doesn't intercept localhost. The
+Worker returns a mock user iff ALL of these hold:
+
+1. `env.AUTH_DISABLED === 'true'`
+2. `env.ENVIRONMENT === 'development'` (only ever set in `worker/.dev.vars`)
+3. Request host (derived from `request.url`, not the `Host` header) is
+   `localhost` / `127.0.0.1`
+
+Production deployments never set `ENVIRONMENT`, so the bypass is
+structurally impossible to enable in prod even if `AUTH_DISABLED` leaks.
+
+### Worker secrets that should be deleted after Sprint 2a merge
+
+Sprint 2a removed the in-Worker OAuth + JWT pipeline. The user should
+delete these from production (no automated cleanup — the user retains
+deployment trigger):
+
+```bash
+wrangler secret delete JWT_SECRET
+wrangler secret delete GITHUB_CLIENT_ID
+wrangler secret delete GITHUB_CLIENT_SECRET
+```
+
+And from the GitHub Actions repository secrets:
+`OAUTH_CLIENT_ID`, `OAUTH_CLIENT_SECRET`, `JWT_SECRET` (no longer
+referenced by CI).
+
 ## Production runtime
 
 The deployed Worker uses **only** Cloudflare's V8 isolate runtime and the
 following bound services:
 
 - `DB` — Cloudflare D1 (SQLite)
-- `JWT_SECRET`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` — Worker secrets
+- `ASSETS` — Cloudflare Static Assets binding (serves `admin/dist/`)
+- Cloudflare Access — protects `/admin*` and `/api/*` (configured in
+  the dashboard, not this repo)
 
 Nothing in `node_modules` runs in production. `npm audit` findings in
 dev-only packages (Wrangler, Miniflare, Vitest pool, esbuild, undici via
@@ -44,26 +108,24 @@ silently. Bump together.
 
 ## Production security controls (worker)
 
-- `JWT_SECRET` is required at runtime; missing secret raises immediately
-  (`worker/src/config.js:requireJwtSecret`)
-- Dev-auth bypass requires **both** `AUTH_DISABLED=true` and
-  `ENVIRONMENT=development`; production deployments never set
-  `ENVIRONMENT` so the bypass is structurally impossible to enable
+- Auth boundary: Cloudflare Access at the edge; Worker verifies
+  `Cf-Access-Jwt-Assertion` RS256 JWT against `<TEAM_DOMAIN>/cdn-cgi/access/certs`
+  (`worker/src/access.js`)
+- Dev-auth bypass requires **all three** of `AUTH_DISABLED=true`,
+  `ENVIRONMENT=development`, and a localhost request URL; production
+  deployments never set `ENVIRONMENT` so the bypass is structurally
+  impossible to enable
 - CORS: explicit allow-list (`ALLOWED_ORIGINS`); never `*` with credentials
-- OAuth: `state` always validated, `redirect_uri` allow-listed against
-  `ALLOWED_REDIRECT_URIS` or origins from `ALLOWED_ORIGINS`
 - Multi-tenancy: every link CRUD path filters by `owner_id`; 404 (not 403)
   for not-yours to avoid existence enumeration
 - Password-protected links: PBKDF2 100k SHA-256, constant-time compare,
   session token in httpOnly cookie scoped to `/{shortcode}`
-- Session JWT: HS256, httpOnly + `__Host-` prefix + SameSite=Lax
 - Rate limits: 50/hr create, 200/hr update/delete, 50/hr bulk ops,
   10/min password verify per (shortcode + IP)
 - Standard security headers on every response: HSTS (preload), nosniff,
   X-Frame-Options=DENY, Referrer-Policy=strict-origin-when-cross-origin,
   Permissions-Policy=interest-cohort=(), CSP for HTML
-- Analytics retention: cron at 03:00 UTC deletes rows older than
-  `ANALYTICS_RETENTION_DAYS` (default 365)
-- Logger PII scrubbing: drops Authorization/Cookie/password/JWT_SECRET keys,
+- Analytics + expired-link sweep: cron at 03:00 UTC (S2)
+- Logger PII scrubbing: drops Authorization/Cookie/password keys,
   redacts `?session=` / `?password=` / `?token=` URL params, truncates
   strings at 2 KB
