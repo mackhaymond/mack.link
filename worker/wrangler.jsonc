@@ -27,7 +27,9 @@
 		"SESSION_COOKIE_NAME": "__Host-link_session",
 		"ALLOWED_ORIGINS": "https://link.mackhaymond.co",
 		"ALLOWED_REDIRECT_URIS": "https://link.mackhaymond.co/admin/auth/callback",
-		"ANALYTICS_RETENTION_DAYS": "365"
+		"ANALYTICS_RETENTION_DAYS": "365",
+		"TEAM_DOMAIN": "https://mackhaymond.cloudflareaccess.com",
+		"POLICY_AUD": "fbbe26349cce35544854c354d84048ea31952d9a4dec9975c7a550d27f128f3e"
 	},
 	"triggers": {
 		"crons": ["0 3 * * *"]
@@ -43,7 +45,9 @@
 				"SESSION_COOKIE_NAME": "__Host-link_session",
 				"ALLOWED_ORIGINS": "",
 				"ALLOWED_REDIRECT_URIS": "",
-				"ANALYTICS_RETENTION_DAYS": "30"
+				"ANALYTICS_RETENTION_DAYS": "30",
+				"TEAM_DOMAIN": "https://mackhaymond.cloudflareaccess.com",
+				"POLICY_AUD": "fbbe26349cce35544854c354d84048ea31952d9a4dec9975c7a550d27f128f3e"
 			}
 			// d1_databases for staging must be filled in once the staging
 			// D1 is created via:
