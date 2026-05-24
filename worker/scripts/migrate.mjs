@@ -33,16 +33,42 @@ if (flag !== '--local' && flag !== '--remote') {
 }
 const target = flag;
 
-function wrangler(args) {
+function wrangler(args, { allowFailure = false } = {}) {
 	const result = spawnSync('npx', ['--no-install', 'wrangler', ...args], {
 		cwd: REPO_ROOT,
-		stdio: ['ignore', 'pipe', 'inherit'],
+		stdio: ['ignore', 'pipe', 'pipe'],
 		encoding: 'utf8',
 	});
-	if (result.status !== 0) {
+	if (!allowFailure && result.status !== 0) {
+		// Surface stderr so the caller sees what went wrong, since we no longer inherit it.
+		if (result.stderr) process.stderr.write(result.stderr);
 		throw new Error(`wrangler ${args.join(' ')} exited with ${result.status}`);
 	}
-	return result.stdout;
+	return { stdout: result.stdout || '', stderr: result.stderr || '', status: result.status };
+}
+
+/**
+ * `wrangler d1 execute --file --json --remote` prefixes stdout with progress
+ * lines (`├ Checking if file needs uploading`, `🌀 Uploading <id>.sql`, etc.)
+ * BEFORE the JSON payload. JSON.parse blows up on those. This helper finds
+ * the first '[' or '{' and parses from there, falling back to null on truly
+ * malformed output.
+ */
+function parseJsonLoose(raw) {
+	if (!raw) return null;
+	const idx = (() => {
+		const a = raw.indexOf('[');
+		const b = raw.indexOf('{');
+		if (a === -1) return b;
+		if (b === -1) return a;
+		return Math.min(a, b);
+	})();
+	if (idx < 0) return null;
+	try {
+		return JSON.parse(raw.slice(idx));
+	} catch {
+		return null;
+	}
 }
 
 function execSql(sql) {
@@ -50,23 +76,53 @@ function execSql(sql) {
 	const file = join(tmp, 'mig.sql');
 	writeFileSync(file, sql);
 	try {
-		wrangler(['d1', 'execute', DB_NAME, target, '--file', file]);
+		const { stderr, status } = wrangler(['d1', 'execute', DB_NAME, target, '--file', file], {
+			allowFailure: true,
+		});
+		if (status !== 0) {
+			if (stderr) process.stderr.write(stderr);
+			throw new Error(`wrangler d1 execute --file (status ${status})`);
+		}
 	} finally {
 		rmSync(tmp, { recursive: true, force: true });
 	}
 }
 
+/**
+ * Run a short query and parse the JSON result.
+ *
+ * Uses `--command` (not `--file`) on purpose: `--file --json --remote` emits
+ * the upload-progress banner to stdout AND returns a multi-envelope JSON
+ * (meta row + data rows), which breaks both `JSON.parse` and naive `[0]`
+ * indexing. `--command` is banner-free and single-envelope.
+ */
 function execSqlJson(sql) {
-	const tmp = mkdtempSync(join(tmpdir(), 'mack-link-mig-q-'));
-	const file = join(tmp, 'q.sql');
+	const { stdout } = wrangler(['d1', 'execute', DB_NAME, target, '--command', sql, '--json']);
+	return parseJsonLoose(stdout);
+}
+
+/**
+ * Run an idempotent ALTER. Treats "duplicate column" (column already exists)
+ * as success so that the runner stays robust even if `columnExists` ever
+ * disagrees with reality (e.g. a prior aborted run, or wrangler output
+ * format drift).
+ */
+function execIdempotentAlter(sql) {
+	const tmp = mkdtempSync(join(tmpdir(), 'mack-link-mig-alter-'));
+	const file = join(tmp, 'mig.sql');
 	writeFileSync(file, sql);
 	try {
-		const out = wrangler(['d1', 'execute', DB_NAME, target, '--file', file, '--json']);
-		try {
-			return JSON.parse(out);
-		} catch {
-			return null;
+		const { stderr, status } = wrangler(['d1', 'execute', DB_NAME, target, '--file', file], {
+			allowFailure: true,
+		});
+		if (status === 0) return;
+		const msg = (stderr || '').toLowerCase();
+		if (msg.includes('duplicate column name') || msg.includes('already exists')) {
+			console.log('    · column already present (treating as success)');
+			return;
 		}
+		if (stderr) process.stderr.write(stderr);
+		throw new Error(`wrangler d1 execute --file (status ${status})`);
 	} finally {
 		rmSync(tmp, { recursive: true, force: true });
 	}
@@ -91,7 +147,7 @@ function columnExists(table, column) {
 function maybeAddExpiresAtToCounters() {
 	if (!columnExists('counters', 'expires_at')) {
 		console.log('  + ALTER counters ADD COLUMN expires_at TEXT');
-		execSql(`ALTER TABLE counters ADD COLUMN expires_at TEXT;`);
+		execIdempotentAlter(`ALTER TABLE counters ADD COLUMN expires_at TEXT;`);
 	} else {
 		console.log('  · counters.expires_at already present');
 	}
@@ -115,14 +171,20 @@ function maybeAddOwnerIdToLinks() {
 		console.log(`  + ALTER links ADD COLUMN owner_id TEXT (backfill -> ${ownerId})`);
 		// SQLite can't add NOT NULL without a default. We add as nullable,
 		// backfill, then rely on application-layer enforcement + the index.
-		execSql(`ALTER TABLE links ADD COLUMN owner_id TEXT;`);
+		execIdempotentAlter(`ALTER TABLE links ADD COLUMN owner_id TEXT;`);
 		execSql(
 			`INSERT OR IGNORE INTO users (id, github_login, email, created_at, updated_at)
 			 VALUES ('${ownerId}', '${authorizedUser}', NULL, ${now}, ${now});`,
 		);
 		execSql(`UPDATE links SET owner_id = '${ownerId}' WHERE owner_id IS NULL;`);
 	} else {
-		console.log('  · links.owner_id already present');
+		// Still backfill any null rows in case a previous partial run left them.
+		execSql(
+			`INSERT OR IGNORE INTO users (id, github_login, email, created_at, updated_at)
+			 VALUES ('${ownerId}', '${authorizedUser}', NULL, ${now}, ${now});`,
+		);
+		execSql(`UPDATE links SET owner_id = '${ownerId}' WHERE owner_id IS NULL;`);
+		console.log('  · links.owner_id already present (backfill verified)');
 	}
 }
 
@@ -130,7 +192,7 @@ function maybeAddUniqueClicks() {
 	for (const table of ['analytics_day', 'analytics_day_agg']) {
 		if (!columnExists(table, 'unique_clicks')) {
 			console.log(`  + ALTER ${table} ADD COLUMN unique_clicks INTEGER DEFAULT 0`);
-			execSql(`ALTER TABLE ${table} ADD COLUMN unique_clicks INTEGER DEFAULT 0;`);
+			execIdempotentAlter(`ALTER TABLE ${table} ADD COLUMN unique_clicks INTEGER DEFAULT 0;`);
 		} else {
 			console.log(`  · ${table}.unique_clicks already present`);
 		}
