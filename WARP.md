@@ -11,12 +11,13 @@ This file provides guidance to WARP (warp.dev) when working with code in this re
   - Worker only: `npm run dev:worker`
   - Admin only: `npm run dev:admin`
   - Fast worker (skip pre-embed): `npm run dev:worker:fast`
-- Build: `npm run build` (admin → embed → worker)
+- Build: `npm run build` (shared + admin; the worker bundle no longer embeds admin since S1)
 - Deploy: `npm run deploy`
 - Validate: `npm run validate:local` | `npm run validate:prod` | `npm run validate:url --url="https://staging.example.com"`
 - Database:
   - Apply schema (local): `npm run db:apply:local`
   - Apply schema (prod): `npm run db:apply:prod`
+  - Apply schema (staging, S3): `D1_DATABASE_NAME=mack-link-staging npm -w worker run db:apply` — the JS migration runner reads `D1_DATABASE_NAME` (default `mack-link`) so the same script owns prod + staging without forking.
   - Reconcile analytics (local|prod): `npm run db:reconcile:analytics:local` | `npm run db:reconcile:analytics:prod`
   - One-off query: `npm run db:q:local --sql="SELECT COUNT(*) FROM links;"` (or `db:q:prod`)
 - Logs (long-running):
@@ -157,7 +158,7 @@ This project runs as a single Cloudflare Worker that serves an embedded React ad
 
 **Cloudflare Worker** (`/worker/`)
 - **Entry Point**: `src/index.js` - Main worker with request lifecycle management
-- **Admin UI**: `src/routes/admin.js` serves the embedded React app at `/admin` using assets from `src/admin-assets.js` (generated at build time)
+- **Admin UI**: `src/routes/admin.js` is a thin delegator (~10 LOC) that strips the `/admin` URL prefix and forwards to `env.ASSETS.fetch()` (Cloudflare Static Assets binding, configured in `wrangler.jsonc` with `directory: "../admin/dist"`). S1 replaced the previous embed pipeline so the React build is served by Cloudflare's CDN instead of being inlined into the Worker JS bundle.
 - **Routing**: `src/routes.js` handles request dispatching between admin, redirects, and API
 - **Authentication**: `src/auth.js` manages GitHub OAuth and session verification
 - **Password System**: `src/password.js` provides PBKDF2 hashing with Web Crypto API
@@ -200,10 +201,9 @@ This project runs as a single Cloudflare Worker that serves an embedded React ad
 
 ### Key Configuration Files
 
-- `worker/wrangler.jsonc`: Worker deployment config, environment variables, D1 binding
+- `worker/wrangler.jsonc`: Worker deployment config, environment variables, D1 binding, Static Assets binding (S1)
 - `admin/vite.config.js`: Frontend build configuration
 - `admin/tailwind.config.js`: Tailwind CSS customization
-- `worker/scripts/build-admin.js`: Embeds admin UI into worker assets
 
 ## Development Patterns
 
@@ -290,10 +290,11 @@ Note: The admin UI is served from the same origin at `/admin`, so a dedicated `M
 
 ## Deployment Notes
 
-- Worker deploys via `wrangler deploy` to Cloudflare Workers
-- Management panel is embedded and served by the Worker at `/admin`
-- D1 database migrations handled through Wrangler CLI
-- Environment variables must be set in Cloudflare Dashboard for production
+- Production deploy: `wrangler deploy` to the prod Worker (`mack.link.workers.dev` + custom domain).
+- PR previews (S3): every PR auto-deploys to the staging Worker (`worker-staging.<CF_WORKERS_SUBDOMAIN>.workers.dev`) via the `preview` CI job. Staging runs in `AUTH_DISABLED=true` mode so reviewers can test without GitHub OAuth. Setup steps (one-time, by the repo owner) are documented in `docs/GITHUB_SECRETS.md`.
+- The admin panel is served by Cloudflare's Static Assets binding (S1) from `admin/dist/` rather than being embedded in the Worker JS.
+- D1 schema migrations: the JS runner (`worker/scripts/migrate.mjs`) supports prod and staging via the `D1_DATABASE_NAME` env var.
+- Environment variables for production must be set in Cloudflare Dashboard (or via `wrangler secret put` for sensitive ones).
 
 ## Analytics Monitoring
 

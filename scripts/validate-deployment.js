@@ -209,8 +209,12 @@ class DeploymentValidator {
           throw new Error(`Expected status 200, got ${response.status}`);
         }
 
+        // RFC 9239 deprecated `application/javascript` in favor of
+        // `text/javascript`. Cloudflare's Static Assets binding (S1) serves
+        // the latter; the prior embed pipeline served the former. Accept
+        // either by matching the trailing token only.
         const contentType = response.headers.get('content-type');
-        if (!contentType.includes('application/javascript')) {
+        if (!/\bjavascript\b/i.test(contentType || '')) {
           throw new Error(`Expected JS content type, got ${contentType}`);
         }
       });
@@ -298,25 +302,25 @@ class DeploymentValidator {
   }
 
   async validateBuildArtifacts() {
-    await this.test('Admin assets are properly embedded', async () => {
-      try {
-        const assetsPath = join(__dirname, '../worker/src/admin-assets.js');
-        const assetsContent = readFileSync(assetsPath, 'utf8');
-
-        if (!assetsContent.includes('export const adminAssets')) {
-          throw new Error('admin-assets.js missing adminAssets export');
-        }
-
-        if (!assetsContent.includes('index.html')) {
-          throw new Error('admin-assets.js missing index.html');
-        }
-
-        if (assetsContent.includes('Admin Panel Loading')) {
-          throw new Error('admin-assets.js contains placeholder content - build may have failed');
-        }
-
-      } catch (error) {
-        throw new Error(`Could not validate build artifacts: ${error.message}`);
+    // S1: After moving admin from embedded JS to the Static Assets binding,
+    // there is no on-disk artifact to introspect (Cloudflare serves admin/dist
+    // directly). Validate the binding works end-to-end by fetching /admin and
+    // confirming the SPA index.html shell is returned.
+    await this.test('Admin SPA is served via Static Assets binding', async () => {
+      const response = await this.fetch('/admin');
+      if (response.status !== 200) {
+        throw new Error(`/admin returned ${response.status}, expected 200`);
+      }
+      const contentType = response.headers.get('content-type') || '';
+      if (!contentType.includes('text/html')) {
+        throw new Error(`/admin content-type is "${contentType}", expected text/html`);
+      }
+      const html = await response.text();
+      if (!html.includes('<div id="root">')) {
+        throw new Error('/admin response missing React mount point (<div id="root">)');
+      }
+      if (!html.includes('/admin/assets/')) {
+        throw new Error('/admin response missing /admin/assets/ references - build may have failed');
       }
     });
   }

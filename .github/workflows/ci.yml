@@ -39,10 +39,12 @@ jobs:
         run: npm run lint
 
       - name: Build
-        # Build must run before Test because worker/src/routes/admin.js imports
-        # the generated worker/src/admin-assets.js (gitignored) at module scope.
-        # On a fresh CI checkout that file doesn't exist yet, so the test
-        # import graph crashes if we test first.
+        # S1: Build runs before Test because vitest-pool-workers loads
+        # worker/wrangler.jsonc, which declares an `assets` binding pointing
+        # at ../admin/dist. Miniflare expects that directory to exist when
+        # the worker boots; running the admin build first guarantees it.
+        # Vite reads test-only API base / OAuth client id from .env.local
+        # (gitignored) so VITE_GITHUB_CLIENT_ID isn't undefined at build time.
         run: |
           cat > admin/.env.local << EOL
           VITE_API_BASE=http://localhost:8787
@@ -54,8 +56,152 @@ jobs:
       - name: Test
         run: npm test
 
-      - name: Check bundle size
-        run: npm run check:bundle-size
+  preview:
+    # S3: PR preview deploys. Every pull request that passes validate gets
+    # auto-deployed to the staging Worker (env.staging in wrangler.jsonc)
+    # so deploy-time landmines (wrangler config drift, secret rot, D1
+    # migration gaps) surface at PR time instead of post-merge.
+    #
+    # Gracefully skips with a warning if the staging D1 hasn't been
+    # created yet - the user runs `wrangler d1 create mack-link-staging`
+    # once, pastes the database_id into wrangler.jsonc, and from then on
+    # every PR auto-deploys. The skip preserves a green CI run so the
+    # PR is still mergeable while staging is being bootstrapped.
+    name: Deploy preview (staging)
+    runs-on: ubuntu-latest
+    needs: validate
+    if: github.event_name == 'pull_request'
+    environment:
+      name: staging
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check staging D1 is configured
+        id: check
+        shell: bash
+        run: |
+          if grep -q "REPLACE_ME_AFTER_wrangler_d1_create" worker/wrangler.jsonc; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::Staging D1 not yet created. Run \`wrangler d1 create mack-link-staging\` and paste the database_id into worker/wrangler.jsonc env.staging.d1_databases[0].database_id to enable PR preview deploys."
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check staging subdomain secret
+        id: check_subdomain
+        if: steps.check.outputs.skip != 'true'
+        shell: bash
+        env:
+          CF_WORKERS_SUBDOMAIN: ${{ secrets.CF_WORKERS_SUBDOMAIN }}
+        run: |
+          if [ -z "$CF_WORKERS_SUBDOMAIN" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::CF_WORKERS_SUBDOMAIN secret not set. See docs/GITHUB_SECRETS.md to configure. Skipping preview deploy."
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build admin for staging
+        if: steps.check.outputs.skip != 'true' && steps.check_subdomain.outputs.skip != 'true'
+        env:
+          CF_WORKERS_SUBDOMAIN: ${{ secrets.CF_WORKERS_SUBDOMAIN }}
+        run: |
+          cat > admin/.env.production << EOL
+          VITE_API_BASE=https://worker-staging.${CF_WORKERS_SUBDOMAIN}.workers.dev
+          VITE_WORKER_DOMAIN=worker-staging.${CF_WORKERS_SUBDOMAIN}.workers.dev
+          VITE_GITHUB_CLIENT_ID=staging_unused
+          VITE_AUTH_DISABLED=true
+          EOL
+          npm run build
+
+      - name: Apply staging D1 migrations
+        if: steps.check.outputs.skip != 'true' && steps.check_subdomain.outputs.skip != 'true'
+        # S3: migrate.mjs reads D1_DATABASE_NAME (default mack-link) so the
+        # exact same runner that owns prod migrations also owns staging.
+        env:
+          D1_DATABASE_NAME: mack-link-staging
+          AUTHORIZED_USER: mackhaymond
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: npm -w worker run db:apply
+
+      - name: Deploy to staging
+        if: steps.check.outputs.skip != 'true' && steps.check_subdomain.outputs.skip != 'true'
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: worker
+          command: deploy --env staging
+          wranglerVersion: ${{ env.WRANGLER_VERSION }}
+        env:
+          # Staging runs in AUTH_DISABLED=true mode (see env.staging.vars in
+          # wrangler.jsonc) so a real OAuth client is not required. JWT_SECRET
+          # must still be present for cookie signing; reuse the prod secret
+          # rather than minting a separate staging one to keep secret sprawl low.
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+
+      - name: Smoke test staging
+        if: steps.check.outputs.skip != 'true' && steps.check_subdomain.outputs.skip != 'true'
+        env:
+          CF_WORKERS_SUBDOMAIN: ${{ secrets.CF_WORKERS_SUBDOMAIN }}
+        shell: bash
+        run: |
+          URL="https://worker-staging.${CF_WORKERS_SUBDOMAIN}.workers.dev"
+          # Wait for the new deployment to propagate to all edges. 10s is
+          # the empirical lower bound; previous bare deploys saw 503s
+          # from cold-routing edges if smoke-tested immediately.
+          sleep 10
+          echo "Smoke testing $URL"
+          curl -fsS -o /dev/null "$URL/"
+          curl -fsS -o /dev/null "$URL/admin"
+
+      - name: Comment preview URL on PR
+        if: steps.check.outputs.skip != 'true' && steps.check_subdomain.outputs.skip != 'true'
+        uses: actions/github-script@v7
+        env:
+          CF_WORKERS_SUBDOMAIN: ${{ secrets.CF_WORKERS_SUBDOMAIN }}
+        with:
+          script: |
+            const url = `https://worker-staging.${process.env.CF_WORKERS_SUBDOMAIN}.workers.dev`;
+            const marker = '<!-- preview-deploy-comment -->';
+            const body = `${marker}\n🚀 **Preview deployed**: ${url}\n\n- Admin: ${url}/admin\n- Auth: bypassed (AUTH_DISABLED=true on staging)\n\nDeployed from \`${context.payload.pull_request.head.sha.substring(0, 7)}\`.`;
+            const { data: comments } = await github.rest.issues.listComments({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+            });
+            const existing = comments.find(c => c.body && c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                comment_id: existing.id,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body,
+              });
+            }
 
   deploy:
     name: Deploy (production)

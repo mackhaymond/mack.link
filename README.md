@@ -165,9 +165,8 @@ mack.link/
 │   │   ├── routes/         # Request handlers
 │   │   ├── index.js        # Worker entry point
 │   │   ├── auth.js         # GitHub OAuth
-│   │   ├── db.js           # D1 database operations
-│   │   └── admin-assets.js # Embedded React build
-│   ├── wrangler.jsonc      # Worker configuration
+│   │   └── db.js           # D1 database operations
+│   ├── wrangler.jsonc      # Worker config (includes Static Assets binding for admin SPA)
 │   └── package.json
 ├── 📁 admin/               # React Admin Panel (Frontend)
 │   ├── src/

@@ -1,7 +1,7 @@
 import { logger } from './logger.js';
 import { handleRequest } from './routes.js';
 import { withCors } from './cors.js';
-import { json, cleanupExpiredCounters } from './utils.js';
+import { json, cleanupExpiredCounters, purgeExpiredLinks } from './utils.js';
 import { withSecurityHeaders } from './securityHeaders.js';
 import { purgeOldAnalytics } from './analytics.js';
 
@@ -85,19 +85,34 @@ export default {
 	},
 
 	/**
-	 * Cron handler. Wired in wrangler.jsonc via triggers.crons. H7+H18:
-	 *   - Daily: purge analytics older than the retention window.
-	 *   - Every run: clean up expired ephemeral counters.
+	 * Cron handler. Wired in wrangler.jsonc via triggers.crons (daily at
+	 * 03:00 UTC). All cleanup runs are consolidated here:
+	 *   - H18 purgeOldAnalytics: drop analytics_day/_agg rows older than
+	 *     ANALYTICS_RETENTION_DAYS (default 365).
+	 *   - H7  cleanupExpiredCounters: drop counters rows whose `expires_at`
+	 *     is in the past (rate-limit buckets, password sessions, etc.).
+	 *     S2 removed the opportunistic 60s-gated hot-path call - this cron
+	 *     run is now the sole owner of counter cleanup.
+	 *   - S2  purgeExpiredLinks: hard-delete links whose `expires_at` is
+	 *     past, mirroring the analytics policy (vs. the user-driven
+	 *     `archived` flag, which is preserved).
+	 *
+	 * All three are wrapped in `.catch` to log + swallow per-task failures
+	 * so one broken task doesn't poison the others. The `ctx.waitUntil`
+	 * keeps the runtime alive until all settle.
 	 */
 	async scheduled(event, env, ctx) {
 		const retentionDays = Number(env.ANALYTICS_RETENTION_DAYS || 365);
-		const purge = purgeOldAnalytics(env, retentionDays).catch((err) =>
+		const purgeAnalytics = purgeOldAnalytics(env, retentionDays).catch((err) =>
 			logger.error('cron_purge_analytics_failed', { error: err?.message }),
 		);
-		const cleanup = cleanupExpiredCounters(env).catch((err) =>
+		const cleanupCounters = cleanupExpiredCounters(env).catch((err) =>
 			logger.error('cron_cleanup_counters_failed', { error: err?.message }),
 		);
-		ctx.waitUntil(Promise.all([purge, cleanup]));
+		const purgeLinks = purgeExpiredLinks(env).catch((err) =>
+			logger.error('cron_purge_expired_links_failed', { error: err?.message }),
+		);
+		ctx.waitUntil(Promise.all([purgeAnalytics, cleanupCounters, purgeLinks]));
 	},
 };
 

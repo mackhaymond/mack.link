@@ -14,6 +14,34 @@
 		"enabled": true,
 		"head_sampling_rate": 0.1
 	},
+	// S1: serve the admin SPA from Cloudflare's Static Assets infrastructure
+	// instead of bundling the React build into the Worker JS. `directory` is
+	// resolved relative to where wrangler runs (worker/), so `../admin/dist`
+	// points at the Vite output. `not_found_handling` lets deep links like
+	// /admin/dashboard fall back to index.html for client-side routing.
+	//
+	// `run_worker_first: true` is REQUIRED here, not optional. Without it,
+	// the assets binding intercepts requests BEFORE the worker handler runs,
+	// which silently breaks routing in three ways:
+	//   1. `/` would serve `admin/dist/index.html` (the SPA) instead of the
+	//      marketing homepage rendered by routes.js -> renderHomeHtml().
+	//   2. `/favicon.svg`, `/vite.svg` etc. that happen to live in
+	//      `admin/dist/` would be served from the dist root rather than
+	//      under `/admin/*`, polluting the public surface.
+	//   3. A shortcode that collides with any file in `admin/dist/` (e.g.
+	//      someone creates a `/index.html` short link) would be hijacked
+	//      by the binding before handleRedirect ever sees it.
+	// With `run_worker_first: true`, the worker handles ALL routing and
+	// only the explicit `env.ASSETS.fetch()` call in handleAdmin exposes
+	// the binding - exactly mirroring the prior embed pipeline's surface
+	// area (only `/admin/*` reaches the assets).
+	"assets": {
+		"directory": "../admin/dist",
+		"binding": "ASSETS",
+		"not_found_handling": "single-page-application",
+		"html_handling": "auto-trailing-slash",
+		"run_worker_first": true
+	},
 	"d1_databases": [
 		{
 			"binding": "DB",
@@ -34,25 +62,58 @@
 	"triggers": {
 		"crons": ["0 3 * * *"]
 	},
-	// Staging env scaffolding (H22). Creating the staging D1 DB and
-	// populating database_id is a user task; see PR description.
+	// Staging env (H22 + S3). The PR-preview deploy job in
+	// .github/workflows/ci.yml targets `worker-staging` and runs
+	// `wrangler deploy --env staging`.
+	//
+	// USER ONE-TIME SETUP (required before previews actually deploy):
+	//   1. wrangler d1 create mack-link-staging
+	//   2. Paste the printed database_id into env.staging.d1_databases[0].database_id below
+	//   3. Replace ALL `<your-subdomain>` placeholders in env.staging.vars
+	//      with your account's workers.dev subdomain (find via `wrangler whoami`)
+	//   4. Add a GitHub Actions secret `CF_WORKERS_SUBDOMAIN` with the same value
+	//
+	// Until step 1+2 is done, the CI preview job auto-detects the
+	// REPLACE_ME_AFTER_wrangler_d1_create marker and skips with a warning
+	// instead of failing the PR (see ci.yml).
+	//
+	// Staging runs in auth-bypass mode (AUTH_DISABLED=true +
+	// ENVIRONMENT=development) so reviewers can test against the preview URL
+	// without GitHub OAuth round trips. The runtime dev-auth defense-in-depth
+	// check (Host must be localhost/127.0.0.1) is intentionally bypassed in
+	// staging via the env flags - staging is itself a non-prod environment.
+	// JWT_SECRET still needs to be set as a wrangler secret on the worker
+	// (any non-empty value works for staging since sessions are mock).
 	"env": {
 		"staging": {
 			"name": "worker-staging",
+			"d1_databases": [
+				{
+					"binding": "DB",
+					"database_name": "mack-link-staging",
+					"database_id": "REPLACE_ME_AFTER_wrangler_d1_create"
+				}
+			],
+			"assets": {
+				"directory": "../admin/dist",
+				"binding": "ASSETS",
+				"not_found_handling": "single-page-application",
+				"html_handling": "auto-trailing-slash",
+				"run_worker_first": true
+			},
 			"vars": {
+				"AUTH_DISABLED": "true",
+				"ENVIRONMENT": "development",
+				"SESSION_ALLOW_INSECURE_COOKIES": "false",
 				"AUTHORIZED_USER": "mackhaymond",
 				"SESSION_MAX_AGE": "28800",
 				"SESSION_COOKIE_NAME": "__Host-link_session",
-				"ALLOWED_ORIGINS": "",
-				"ALLOWED_REDIRECT_URIS": "",
+				"ALLOWED_ORIGINS": "https://worker-staging.<your-subdomain>.workers.dev",
+				"ALLOWED_REDIRECT_URIS": "https://worker-staging.<your-subdomain>.workers.dev/admin/auth/callback",
 				"ANALYTICS_RETENTION_DAYS": "30",
 				"TEAM_DOMAIN": "https://mackhaymond.cloudflareaccess.com",
 				"POLICY_AUD": "fbbe26349cce35544854c354d84048ea31952d9a4dec9975c7a550d27f128f3e"
 			}
-			// d1_databases for staging must be filled in once the staging
-			// D1 is created via:
-			//   wrangler d1 create mack-link-staging
-			// then add a d1_databases entry mirroring prod with the new id.
 		}
 	}
 }

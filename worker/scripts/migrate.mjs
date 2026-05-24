@@ -13,6 +13,17 @@
  * Usage:
  *   node scripts/migrate.mjs --local    # against the local Miniflare D1
  *   node scripts/migrate.mjs --remote   # against production D1
+ *
+ * S3: Database name defaults to `mack-link` (prod) but is overridable via
+ * the `D1_DATABASE_NAME` env var so the PR-preview CI job can target the
+ * staging D1 (`mack-link-staging`) without forking the runner. Example:
+ *   D1_DATABASE_NAME=mack-link-staging node scripts/migrate.mjs --remote
+ *
+ * The env-var approach was picked over `wrangler --env staging` flag
+ * passthrough because (a) it's a single-line change, (b) wrangler resolves
+ * `d1 execute <DATABASE>` account-wide rather than env-scoped, so the
+ * positional arg is the actual selector regardless of --env, and (c) the
+ * migrations table is account-wide too (per-DB).
  */
 
 import { spawnSync } from 'node:child_process';
@@ -24,7 +35,7 @@ import { tmpdir } from 'node:os';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, '..');
 const MIGRATIONS_DIR = join(REPO_ROOT, 'src', 'migrations');
-const DB_NAME = 'mack-link';
+const DB_NAME = process.env.D1_DATABASE_NAME || 'mack-link';
 
 const flag = process.argv[2];
 if (flag !== '--local' && flag !== '--remote') {
@@ -206,7 +217,7 @@ const PROGRAMMATIC_STEPS = {
 };
 
 function main() {
-	console.log(`Running migrations against ${target.replace('--', '')} D1`);
+	console.log(`Running migrations against ${target.replace('--', '')} D1 [${DB_NAME}]`);
 	ensureMigrationsTable();
 	const applied = appliedIds();
 	const files = readdirSync(MIGRATIONS_DIR)
