@@ -91,10 +91,6 @@
 		}
 	],
 	"vars": {
-		// Matches the Access JWT email-derived login (payload.email.split('@')[0]).
-		// Sprint 2a moved identity from GitHub login (was 'mackhaymond') to Access
-		// email username part ('mack.haymond' for mack.haymond@icloud.com).
-		"AUTHORIZED_USER": "mack.haymond",
 		"SESSION_MAX_AGE": "28800",
 		"SESSION_COOKIE_NAME": "__Host-link_session",
 		"ALLOWED_ORIGINS": "https://link.mackhaymond.co",
@@ -175,7 +171,6 @@
 				"AUTH_DISABLED": "true",
 				"ENVIRONMENT": "development",
 				"SESSION_ALLOW_INSECURE_COOKIES": "false",
-				"AUTHORIZED_USER": "mack.haymond",
 				"SESSION_MAX_AGE": "28800",
 				"SESSION_COOKIE_NAME": "__Host-link_session",
 				"ALLOWED_ORIGINS": "https://worker-staging.<your-subdomain>.workers.dev",

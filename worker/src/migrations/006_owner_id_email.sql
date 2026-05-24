@@ -1,0 +1,23 @@
+-- B4b (Sprint 2b): rename owner_id from the legacy `gh:<localpart>` form
+-- to the post-Access email-based identity. The actual rename is done by
+-- the programmatic step `maybeRenameOwnerIdToEmail` in scripts/migrate.mjs
+-- because:
+--   1. It needs to read env vars (OWNER_EMAIL, optional OLD_OWNER_ID) to
+--      know what to rename — pure SQL can't do that
+--   2. It needs to be idempotent across the gh:* → email transition AND
+--      handle the case where the target row already exists (partial prior
+--      migration), which requires control flow not expressible in one SQL file
+--   3. It must touch both `users.id` (PK) and `links.owner_id` in a
+--      coordinated way that depends on whether the target row exists
+--
+-- Usage:
+--   OWNER_EMAIL=you@example.com npm run db:apply:prod
+--     -> renames owner_id 'gh:you' to 'you@example.com'
+--
+--   OLD_OWNER_ID=gh:legacyname OWNER_EMAIL=you@example.com npm run db:apply:prod
+--     -> renames owner_id from the explicit OLD_OWNER_ID to OWNER_EMAIL
+--     (use this when the gh: local-part doesn't match the email local-part,
+--      e.g. existing data is 'gh:mackhaymond' but email is mack.haymond@icloud.com)
+--
+-- Without OWNER_EMAIL the migration logs a skip and exits successfully —
+-- fresh installs with email-based identity from day 1 don't need it.

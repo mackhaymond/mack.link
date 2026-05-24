@@ -23,13 +23,17 @@ export function isDevBypassEligible(env = {}) {
 
 /**
  * Reads request-time config from env vars. Returns only fields still in
- * use after Sprint 2a (A2). Removed:
+ * use after Sprint 2a (A2) + Sprint 2b. Removed:
  *   - githubClientId / githubClientSecret (OAuth gone)
  *   - jwtSecret (no Worker-issued JWTs anymore)
  *   - sessionCookieName / sessionMaxAgeSeconds (no Worker session cookie)
  *   - allowedRedirectUris (no OAuth redirect_uri)
  *   - authDisabled (only the old routesOAuth.js read this; auth.js uses
  *     isDevBypassEligible(env) directly)
+ *   - authorizedUser (B4a, Sprint 2b: belt-and-suspenders check removed
+ *     from requireAuth; authorization is now solely Cloudflare Access's job)
+ *   - rateLimits (B1, Sprint 2b: native rate-limit binding owns its limits
+ *     in wrangler.jsonc; in-app config no longer needed)
  *
  * `allowInsecureCookies` is preserved because routes/password.js still
  * sets a per-shortcode password-session cookie (that feature is
@@ -39,7 +43,6 @@ export function getConfig(env = {}) {
 	const allowInsecureCookies = String(env.SESSION_ALLOW_INSECURE_COOKIES || '').toLowerCase() === 'true' || isDevBypassEligible(env);
 
 	return {
-		authorizedUser: env.AUTHORIZED_USER,
 		allowInsecureCookies,
 		authDisabledUserLogin: env.AUTH_DISABLED_USER_LOGIN,
 		authDisabledUserName: env.AUTH_DISABLED_USER_NAME,
@@ -49,16 +52,6 @@ export function getConfig(env = {}) {
 			default: 10000,
 			jsonParse: 2000,
 			github: 8000,
-		},
-		rateLimits: {
-			createPerHour: 50,
-			updatePerHour: 200,
-			deletePerHour: 200,
-			bulkCreatePerHour: 50,
-			bulkDeletePerHour: 50,
-			windowMs: 60 * 60 * 1000,
-			// Password verify attempts per (shortcode + IP) per minute
-			passwordVerifyPerMinute: 10,
 		},
 	};
 }

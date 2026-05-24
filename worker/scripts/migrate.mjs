@@ -165,10 +165,16 @@ function maybeAddExpiresAtToCounters() {
 }
 
 function maybeAddOwnerIdToLinks() {
+	// B4b (Sprint 2b): prefer OWNER_EMAIL for the backfill identity. Fresh
+	// installs that already have the new email-based identity from day 1
+	// land directly on the right shape; legacy installs (AUTHORIZED_USER
+	// without OWNER_EMAIL) get the historical `gh:<login>` placeholder and
+	// then the 006 step renames it.
+	const ownerEmail = process.env.OWNER_EMAIL;
 	const authorizedUser = process.env.AUTHORIZED_USER || 'legacy';
-	const ownerId = `gh:${authorizedUser}`;
+	const ownerId = ownerEmail || `gh:${authorizedUser}`;
+	const displayLogin = ownerEmail || authorizedUser;
 	const now = Date.now();
-	// Ensure users table exists before we INSERT into it.
 	execSql(
 		`CREATE TABLE IF NOT EXISTS users (
 			id TEXT PRIMARY KEY,
@@ -185,17 +191,67 @@ function maybeAddOwnerIdToLinks() {
 		execIdempotentAlter(`ALTER TABLE links ADD COLUMN owner_id TEXT;`);
 		execSql(
 			`INSERT OR IGNORE INTO users (id, github_login, email, created_at, updated_at)
-			 VALUES ('${ownerId}', '${authorizedUser}', NULL, ${now}, ${now});`,
+			 VALUES ('${ownerId}', '${displayLogin}', ${ownerEmail ? `'${ownerEmail}'` : 'NULL'}, ${now}, ${now});`,
 		);
 		execSql(`UPDATE links SET owner_id = '${ownerId}' WHERE owner_id IS NULL;`);
 	} else {
 		// Still backfill any null rows in case a previous partial run left them.
 		execSql(
 			`INSERT OR IGNORE INTO users (id, github_login, email, created_at, updated_at)
-			 VALUES ('${ownerId}', '${authorizedUser}', NULL, ${now}, ${now});`,
+			 VALUES ('${ownerId}', '${displayLogin}', ${ownerEmail ? `'${ownerEmail}'` : 'NULL'}, ${now}, ${now});`,
 		);
 		execSql(`UPDATE links SET owner_id = '${ownerId}' WHERE owner_id IS NULL;`);
 		console.log('  · links.owner_id already present (backfill verified)');
+	}
+}
+
+/**
+ * B4b (Sprint 2b): rename owner_id from the legacy `gh:<localpart>` form
+ * to the post-Access email-based identity. See 006_owner_id_email.sql for
+ * the full design rationale.
+ *
+ * Idempotent: skips with a log line if OWNER_EMAIL isn't set OR if the
+ * old row doesn't exist (already migrated / fresh install).
+ *
+ * Safe edge cases:
+ *   - Target row already exists (partial prior migration): point links
+ *     at the new row and delete the old user row instead of UPDATE on PK.
+ *   - OLD_OWNER_ID env var overrides the default `gh:<localpart>` guess
+ *     so existing prod data with a different legacy shape (e.g.
+ *     `gh:mackhaymond` while OWNER_EMAIL=mack.haymond@icloud.com) can
+ *     still be renamed without us hardcoding assumptions.
+ */
+function maybeRenameOwnerIdToEmail() {
+	const email = process.env.OWNER_EMAIL;
+	if (!email) {
+		console.log('  · OWNER_EMAIL not set, skipping owner_id rename (set it to migrate legacy gh:* rows)');
+		return;
+	}
+	if (!email.includes('@')) {
+		throw new Error(`OWNER_EMAIL must be a valid email, got: ${email}`);
+	}
+	const expectedLocalPart = email.split('@')[0];
+	const oldId = process.env.OLD_OWNER_ID || `gh:${expectedLocalPart}`;
+
+	const result = execSqlJson(`SELECT id FROM users WHERE id = '${oldId}';`);
+	const oldRows = (result?.[0]?.results) || [];
+	if (oldRows.length === 0) {
+		console.log(`  · no rows with owner_id ${oldId} to rename (already migrated or fresh install)`);
+		return;
+	}
+
+	const targetResult = execSqlJson(`SELECT id FROM users WHERE id = '${email}';`);
+	const targetExists = ((targetResult?.[0]?.results) || []).length > 0;
+	const now = Date.now();
+
+	if (targetExists) {
+		console.log(`  + rename owner_id ${oldId} -> ${email} (target row exists; merging)`);
+		execSql(`UPDATE links SET owner_id = '${email}' WHERE owner_id = '${oldId}';`);
+		execSql(`DELETE FROM users WHERE id = '${oldId}';`);
+	} else {
+		console.log(`  + rename owner_id ${oldId} -> ${email}`);
+		execSql(`UPDATE users SET id = '${email}', email = '${email}', updated_at = ${now} WHERE id = '${oldId}';`);
+		execSql(`UPDATE links SET owner_id = '${email}' WHERE owner_id = '${oldId}';`);
 	}
 }
 
@@ -214,6 +270,7 @@ const PROGRAMMATIC_STEPS = {
 	'002_counters_expiry.sql': maybeAddExpiresAtToCounters,
 	'003_owner_id.sql': maybeAddOwnerIdToLinks,
 	'005_unique_visitors.sql': maybeAddUniqueClicks,
+	'006_owner_id_email.sql': maybeRenameOwnerIdToEmail,
 };
 
 function main() {

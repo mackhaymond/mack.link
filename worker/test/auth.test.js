@@ -4,7 +4,7 @@ import { _resetJwksCacheForTests } from '../src/access.js';
 import { isDevBypassEligible, getConfig, getMockUser } from '../src/config.js';
 import { TEAM_DOMAIN, POLICY_AUD, generateKeypair, buildJwks, mintJwt, stubJwksFetch } from './_helpers/access-fixture.js';
 
-const PROD_ENV = { TEAM_DOMAIN, POLICY_AUD, AUTHORIZED_USER: 'mackhaymond' };
+const PROD_ENV = { TEAM_DOMAIN, POLICY_AUD };
 const DEV_ENV = { ...PROD_ENV, AUTH_DISABLED: 'true', ENVIRONMENT: 'development' };
 
 function req(url, headers = {}) {
@@ -37,6 +37,14 @@ describe('config helpers (Sprint 2a)', () => {
 			expect(cfg.githubClientSecret).toBeUndefined();
 			expect(cfg.allowedRedirectUris).toBeUndefined();
 			expect(cfg.sessionCookieName).toBeUndefined();
+		});
+		it('B4a (Sprint 2b): no longer surfaces authorizedUser', () => {
+			const cfg = getConfig({ AUTHORIZED_USER: 'should-be-ignored' });
+			expect(cfg.authorizedUser).toBeUndefined();
+		});
+		it('B1 (Sprint 2b): no longer surfaces rateLimits (native binding owns it)', () => {
+			const cfg = getConfig({});
+			expect(cfg.rateLimits).toBeUndefined();
 		});
 	});
 
@@ -93,16 +101,34 @@ describe('authenticateRequest (Sprint 2a A1)', () => {
 		expect(user).toBeNull();
 	});
 
-	it('verifies a valid Cf-Access-Jwt-Assertion header and maps to identity', async () => {
-		const token = await mintJwt(keypair.privateKey, { email: 'mackhaymond@example.com', name: 'Mack H.', sub: 'access:42' });
+	it('B4b (Sprint 2b): login is the FULL email, not the local-part', async () => {
+		const token = await mintJwt(keypair.privateKey, { email: 'mack.haymond@icloud.com', name: 'Mack H.', sub: 'access:42' });
 		const user = await authenticateRequest(PROD_ENV, req('https://link.mackhaymond.co/api/links', {
 			'cf-access-jwt-assertion': token,
 		}));
 		expect(user).not.toBeNull();
-		expect(user.email).toBe('mackhaymond@example.com');
-		expect(user.login).toBe('mackhaymond');
+		expect(user.email).toBe('mack.haymond@icloud.com');
+		expect(user.login).toBe('mack.haymond@icloud.com');
 		expect(user.name).toBe('Mack H.');
 		expect(user.id).toBe('access:42');
+	});
+
+	it('B4b: plus-addressed emails round-trip without mangling', async () => {
+		const token = await mintJwt(keypair.privateKey, { email: 'mack+test@icloud.com' });
+		const user = await authenticateRequest(PROD_ENV, req('https://link.mackhaymond.co/api/links', {
+			'cf-access-jwt-assertion': token,
+		}));
+		expect(user.login).toBe('mack+test@icloud.com');
+	});
+
+	it('B4b: same local-part across different domains does NOT collide', async () => {
+		const a = await mintJwt(keypair.privateKey, { email: 'mack@example.com', sub: 'a' });
+		const b = await mintJwt(keypair.privateKey, { email: 'mack@other.com', sub: 'b' });
+		const uA = await authenticateRequest(PROD_ENV, req('https://link.mackhaymond.co/api/links', { 'cf-access-jwt-assertion': a }));
+		const uB = await authenticateRequest(PROD_ENV, req('https://link.mackhaymond.co/api/links', { 'cf-access-jwt-assertion': b }));
+		expect(uA.login).toBe('mack@example.com');
+		expect(uB.login).toBe('mack@other.com');
+		expect(uA.login).not.toBe(uB.login);
 	});
 
 	it('returns null on invalid JWT (verify throws)', async () => {
@@ -140,27 +166,24 @@ describe('requireAuth (contract preserved)', () => {
 	});
 
 	it('returns the user object when authenticated', async () => {
-		const token = await mintJwt(keypair.privateKey, { email: 'mackhaymond@example.com' });
+		const token = await mintJwt(keypair.privateKey, { email: 'mack.haymond@icloud.com' });
 		const result = await requireAuth(PROD_ENV, req('https://link.mackhaymond.co/api/links', {
 			'cf-access-jwt-assertion': token,
 		}));
 		expect(result).not.toBeInstanceOf(Response);
-		expect(result.login).toBe('mackhaymond');
+		expect(result.login).toBe('mack.haymond@icloud.com');
 	});
 
-	it('returns 403 when login does not match AUTHORIZED_USER (belt-and-suspenders)', async () => {
-		const token = await mintJwt(keypair.privateKey, { email: 'stranger@example.com' });
+	it('B4a (Sprint 2b): any authenticated identity is accepted - Access is the source of truth', async () => {
+		const token = await mintJwt(keypair.privateKey, { email: 'someone-else@example.com' });
 		const result = await requireAuth(PROD_ENV, req('https://link.mackhaymond.co/api/links', {
 			'cf-access-jwt-assertion': token,
 		}));
-		expect(result).toBeInstanceOf(Response);
-		expect(result.status).toBe(403);
+		expect(result).not.toBeInstanceOf(Response);
+		expect(result.login).toBe('someone-else@example.com');
 	});
 
-	it('dev bypass: AUTHORIZED_USER mismatch does NOT 403', async () => {
-		// dev mock user is 'ai-dev', AUTHORIZED_USER is 'mackhaymond' - in dev
-		// bypass the authorizedUser check is skipped (so local devs don't have
-		// to set AUTHORIZED_USER=ai-dev in .dev.vars).
+	it('dev bypass returns the mock user without auth', async () => {
 		const result = await requireAuth(DEV_ENV, req('http://localhost:8787/api/links'));
 		expect(result).not.toBeInstanceOf(Response);
 		expect(result.login).toBe('ai-dev');

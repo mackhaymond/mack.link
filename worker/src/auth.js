@@ -1,4 +1,4 @@
-import { getConfig, getMockUser, isDevBypassEligible } from './config.js';
+import { getMockUser, isDevBypassEligible } from './config.js';
 import { verifyAccessJwt } from './access.js';
 import { withCors } from './cors.js';
 import { logger } from './logger.js';
@@ -36,15 +36,19 @@ function isLocalHostRequest(request) {
 /**
  * Resolve the user behind a request, or null if unauthenticated.
  *
- * Identity shape (preserved across the OAuth -> Access migration so
- * downstream callers like getOwnerId / routesLinks don't break):
+ * Identity shape:
  *   { login, email, name, id, avatar_url }
  *
- *  - `login` is derived from the email local-part (same as the GitHub
- *    `login` field for users whose GitHub username matches their primary
- *    email, which is the case for the single authorized user).
- *  - `id` is the Access subject claim (`sub`), prefixed-stable across
- *    Access sessions.
+ * B4b (Sprint 2b): `login` is now the FULL email (e.g.
+ * "mack.haymond@icloud.com"), not the local-part. Reasons:
+ *   - The previous local-part-only derivation collided across domains
+ *     ("mack@a.com" and "mack@b.com" both yielded login="mack")
+ *   - It made plus-addressing ugly ("mack+test@icloud.com" → login="mack+test")
+ *   - downstream owner_id derivation in users.js becomes simpler (the
+ *     gh:* prefix is gone; owner_id IS the email)
+ *
+ * `id` is the Access subject claim (`sub`), prefixed-stable across
+ * Access sessions.
  */
 export async function authenticateRequest(env, request) {
 	if (isDevBypassEligible(env) && isLocalHostRequest(request)) {
@@ -57,7 +61,7 @@ export async function authenticateRequest(env, request) {
 	try {
 		const payload = await verifyAccessJwt(token, env.TEAM_DOMAIN, env.POLICY_AUD);
 		const email = String(payload.email || '');
-		const login = email.includes('@') ? email.split('@')[0] : (payload.sub || 'unknown');
+		const login = email || payload.sub || 'unknown';
 		return {
 			login,
 			email,
@@ -73,27 +77,28 @@ export async function authenticateRequest(env, request) {
 
 /**
  * Auth-gate a request and return the resolved user, or return a Response
- * to short-circuit. Contract preserved verbatim from pre-Sprint-2a so
- * existing callsites in routerApi.js work unchanged:
+ * to short-circuit. Contract preserved verbatim:
  *
  *   const result = await requireAuth(env, request);
  *   if (result instanceof Response) return result;
  *   // ...use result as the user object...
  *
- * The AUTHORIZED_USER env var check is kept as belt-and-suspenders: Access
- * already restricts to allowed identities at the edge via its Allow policy,
- * but if Access were ever misconfigured (e.g. policy disabled while the
- * app stays Required) we still reject unknown logins here.
+ * B4a (Sprint 2b): the prior AUTHORIZED_USER belt-and-suspenders check
+ * is GONE. Authorization is enforced upstream by Cloudflare Access's
+ * Allow policy at the edge — that's the source of truth for "who can
+ * access this app". The duplicated Worker-side check already bit us
+ * once (Sprint 2a postmortem: the Worker compared 'mack.haymond' to
+ * 'mackhaymond' and 403'd production for an hour). Don't reintroduce
+ * the double-source-of-truth pattern; trust the edge policy.
+ *
+ * If Access is ever misconfigured (Allow policy disabled while app
+ * stays Required), the failure mode is "anyone in the org reaches
+ * the worker", not "no one can". Detect via SECURITY.md path-coverage
+ * audits, not in-band Worker logic.
  */
 export async function requireAuth(env, request) {
 	const user = await authenticateRequest(env, request);
 	if (!user) return withCors(env, new Response('Unauthorized', { status: 401 }), request);
-
-	const { authorizedUser } = getConfig(env);
-	const devBypass = isDevBypassEligible(env);
-	if (!devBypass && authorizedUser && user.login !== authorizedUser) {
-		return withCors(env, new Response('Forbidden: Access denied', { status: 403 }), request);
-	}
 	return user;
 }
 
