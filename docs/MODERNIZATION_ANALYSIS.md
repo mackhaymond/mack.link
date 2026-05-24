@@ -477,6 +477,132 @@ Each materially changes the recommendations.
 
 ---
 
+## 9. Bootstrap-action findings — end-to-end preview-deploy verification
+
+The originating brief required actually clicking + curling the preview URL
+that this PR's CI deploys, on the theory that "the agent that wrote the
+preview pipeline (Sprint 1) verified it via CI status alone, not by
+actually USING the preview." That theory turned out to be **correct, and
+worse than the brief suspected**.
+
+### Two distinct bugs found
+
+#### Bug 1 — Preview guard always-skipped (FIXED in this PR, commit `a1814ed`)
+
+`.github/workflows/ci.yml` had:
+
+```bash
+if grep -q "REPLACE_ME_AFTER_wrangler_d1_create" worker/wrangler.jsonc; then
+  echo "skip=true" >> "$GITHUB_OUTPUT"
+  echo "::warning::Staging D1 not yet created..."
+fi
+```
+
+`worker/wrangler.jsonc` line 117 contains the bare-word mention of the
+placeholder **inside the comment that documents the guard itself**:
+
+> ```
+> // Until step 1+2 is done, the CI preview job auto-detects the
+> // REPLACE_ME_AFTER_wrangler_d1_create marker and skips with a warning
+> // instead of failing the PR (see ci.yml).
+> ```
+
+So the grep always matched, the guard always emitted `::warning::`, the
+preview job always skipped — and `wrangler deploy --env staging` was
+**never actually executed by CI since Sprint 1 shipped (PR #38)**.
+
+The shared `worker-staging.{subdomain}.workers.dev` slot that the prior
+thread thought was being updated on every PR has been frozen at whatever
+state was last `wrangler deploy --env staging`-ed from a developer's
+local machine — for the entire life of the preview pipeline.
+
+This commit fixes the guard by anchoring the regex to the JSON-value
+form (`"REPLACE_ME_AFTER_wrangler_d1_create"` with surrounding quotes),
+so the comment text no longer trips it. Verified in CI: post-fix the
+preview job no longer auto-skips and proceeds to the build/migrate/deploy
+steps. **Below the 30 LOC scope ceiling, fixed in scope.**
+
+#### Bug 2 — Cloudflare API token auth fails on staging migration (NOT FIXED, outside scope)
+
+With Bug 1 fixed, the preview job's `Apply staging D1 migrations` step
+runs and fails with:
+
+```
+✘ A request to the Cloudflare API (/accounts/***/d1/database) failed.
+  Authentication error [code: 10000]
+```
+
+The `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` secrets ARE present
+in the `staging` GitHub Actions environment (the log shows `***` redaction,
+not "unset"). The auth still fails. Likely causes — in descending probability:
+
+1. **Token scope**: the secret is scoped to the production deploy only and
+   lacks `D1:Edit` permissions for the `mack-link-staging` database.
+2. **Token rotation**: token was rotated for prod and the staging-env
+   secret wasn't refreshed.
+3. **Account-ID mismatch**: the staging environment secret points at a
+   different Cloudflare account than the one that owns
+   `mack-link-staging` (`ca9836da-1d7d-4c79-99cd-5c2734327b64`).
+
+**Fixing this is not a code change.** It's a Cloudflare Dashboard +
+GitHub repo settings task: create or update a token with `Account:D1:Edit`
+on the right account, paste into the `staging` environment's
+`CLOUDFLARE_API_TOKEN` secret. That's strictly user action; doing it
+from an agent risks leaking secrets and violates the operating
+discipline in this repo's `AGENTS.md`.
+
+Per the brief's "if a fix requires more than ~30 LOC, STOP and report"
+rule, **left as-is**. The PR stays open for the user.
+
+### Consequences for the prior thread's recommendation list
+
+This finding **strengthens** recommendation #4 (per-PR Worker name +
+cleanup workflow). Beyond the concurrent-PR-collision argument in §3,
+there's now a verified data point that the current single-shared-staging
+setup was never actually exercised by CI. Any per-PR redesign should:
+
+1. Fix the API-token permissions issue first (user action).
+2. Verify end-to-end (curl the URL) before declaring the pipeline green.
+3. Add a curl-based smoke check that fails CI on a non-2xx response,
+   so a future regression of either bug shows up in CI status, not
+   only on a human's screen. The existing `Smoke test staging` step
+   does `curl -fsS -o /dev/null` which fails on non-2xx — but it only
+   runs **after** the deploy step, and we never got that far. Move
+   the smoke step to its own job that runs on a schedule against the
+   live preview URL, not just inline in the deploy job, so accidental
+   skips don't hide a broken staging.
+
+### What was verified end-to-end vs not
+
+| Endpoint | Status |
+|---|---|
+| `Validate (lint + test + build)` job on this PR | ✅ Pass (37s) — doc-only change broke nothing |
+| `Deploy preview (staging)` job — guard correctly evaluates non-skip | ✅ Verified post-fix (commit `a1814ed`) |
+| `Deploy preview (staging)` job — `Build admin for staging` step | ✅ Reached (would have failed if Bug 1 were unfixed) |
+| `Deploy preview (staging)` job — `Apply staging D1 migrations` step | ❌ **Fails with CF API auth error** — see Bug 2 |
+| `Deploy preview (staging)` job — `Deploy to staging` step | ⏸ Never reached — blocked by Bug 2 |
+| `Deploy preview (staging)` job — `Smoke test staging` step | ⏸ Never reached |
+| `Deploy preview (staging)` job — `Comment preview URL on PR` step | ⏸ Never reached — that's why this PR has no bot comment |
+| `GET https://worker-staging.spyicydev.workers.dev/` 200 | 🚫 Not testable from this PR (deploy never succeeded) |
+| `GET https://worker-staging.spyicydev.workers.dev/{shortcode}` 301/404 | 🚫 Not testable |
+| `GET https://worker-staging.spyicydev.workers.dev/admin` 200 + `<div id="root">` | 🚫 Not testable |
+| `GET https://worker-staging.spyicydev.workers.dev/api/links` 200 JSON | 🚫 Not testable |
+
+### Action items for the user (outside this PR's scope)
+
+1. **Verify the `staging` GitHub Actions environment's
+   `CLOUDFLARE_API_TOKEN`** has `D1:Edit` on the account that owns
+   `mack-link-staging` (database_id `ca9836da-1d7d-4c79-99cd-5c2734327b64`).
+   Likely fix: create a new token in the Cloudflare dashboard with that
+   permission and update the env secret.
+2. After updating: push an empty commit to this branch or any PR to
+   re-trigger CI; the deploy should complete and post a preview URL
+   comment for the first time ever.
+3. **Once that's working**: curl-verify the four endpoints in the table
+   above; then close this PR (or merge — the doc may stand on its own).
+
+---
+
 ## Appendix: methodology
 
 This document was produced by:
