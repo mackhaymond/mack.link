@@ -292,7 +292,11 @@ function main() {
 		const programmatic = PROGRAMMATIC_STEPS[f];
 		if (programmatic) programmatic();
 		const sql = readFileSync(join(MIGRATIONS_DIR, f), 'utf8');
-		if (sql.trim().length > 0) execSql(sql);
+		// Skip comment-only migrations (programmatic-only steps like 006 use
+		// the .sql file as a documentation marker). Strip line comments and
+		// whitespace; if anything's left, send the original to wrangler.
+		const stripped = sql.replace(/^\s*--.*$/gm, '').trim();
+		if (stripped.length > 0) execSql(sql);
 		execSql(`INSERT INTO migrations (id, applied_at) VALUES ('${f}', ${Date.now()});`);
 		ran++;
 	}
