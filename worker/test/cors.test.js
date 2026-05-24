@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { getCorsHeaders, isOriginAllowed, isRedirectUriAllowed } from '../src/cors.js';
+import { getCorsHeaders, isOriginAllowed } from '../src/cors.js';
 
 function makeReq(url, headers = {}) {
 	const h = new Map(Object.entries(headers));
@@ -62,27 +62,4 @@ describe('CORS', () => {
 		});
 	});
 
-	describe('isRedirectUriAllowed', () => {
-		it('accepts exact matches from ALLOWED_REDIRECT_URIS', () => {
-			const env = { ALLOWED_REDIRECT_URIS: 'https://link.mackhaymond.co/admin/auth/callback' };
-			expect(isRedirectUriAllowed(env, 'https://link.mackhaymond.co/admin/auth/callback')).toBe(true);
-		});
-		it('accepts URIs whose origin is on the CORS allow-list', () => {
-			const env = { ALLOWED_ORIGINS: 'https://app.example.com' };
-			expect(isRedirectUriAllowed(env, 'https://app.example.com/oauth/cb')).toBe(true);
-			expect(isRedirectUriAllowed(env, 'https://link.mackhaymond.co/admin/auth/callback')).toBe(true);
-		});
-		it('rejects unknown origins', () => {
-			expect(isRedirectUriAllowed(prodEnv, 'https://evil.com/cb')).toBe(false);
-		});
-		it('rejects javascript:/data: schemes', () => {
-			expect(isRedirectUriAllowed(prodEnv, 'javascript:alert(1)')).toBe(false);
-			expect(isRedirectUriAllowed(prodEnv, 'data:text/html,<script>')).toBe(false);
-		});
-		it('rejects garbage input', () => {
-			expect(isRedirectUriAllowed(prodEnv, '')).toBe(false);
-			expect(isRedirectUriAllowed(prodEnv, 'not a url')).toBe(false);
-			expect(isRedirectUriAllowed(prodEnv, null)).toBe(false);
-		});
-	});
 });

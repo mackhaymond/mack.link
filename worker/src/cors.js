@@ -27,31 +27,10 @@ function buildAllowList(env) {
 
 /**
  * Returns true if the given origin string is allowed for CORS.
- * Exported for use in OAuth flows (C4).
  */
 export function isOriginAllowed(env, origin) {
 	if (!origin) return false;
 	return buildAllowList(env).has(origin);
-}
-
-/**
- * Returns true if a redirect_uri is allowed.
- * Allows exact matches from ALLOWED_REDIRECT_URIS, and any URI whose origin
- * is on the CORS allow-list (so that e.g. /admin/auth/callback paths work
- * without listing every callback variant).
- */
-export function isRedirectUriAllowed(env, redirectUri) {
-	if (!redirectUri || typeof redirectUri !== 'string') return false;
-	const { allowedRedirectUris } = getConfig(env);
-	if (allowedRedirectUris.includes(redirectUri)) return true;
-	let url;
-	try {
-		url = new URL(redirectUri);
-	} catch {
-		return false;
-	}
-	if (!/^https?:$/.test(url.protocol)) return false;
-	return isOriginAllowed(env, url.origin);
 }
 
 /**

@@ -1,7 +1,6 @@
 import { requireAuth, handleLogout } from '../auth.js';
 import { withCors } from '../cors.js';
 import { getAllLinks, createLink, updateLink, deleteLink, bulkDeleteLinks, getLink, bulkCreateLinks, listLinks } from './routesLinks.js';
-import { handleGitHubAuth, handleGitHubCallback, handleDevAuthLogin } from './routesOAuth.js';
 import { getTimeseries, getTimeseriesByLinks, getBreakdown, getOverview, exportAnalytics } from '../analytics.js';
 import { handlePasswordVerification } from './password.js';
 import { getReservedPathsList } from '../reservedPaths.js';
@@ -12,19 +11,16 @@ export async function handleAPI(request, env, requestLogger) {
 	const path = url.pathname;
 	const method = request.method;
 
-	// OAuth endpoints - no auth required
-	if (path === '/api/auth/github') {
-		return await handleGitHubAuth(request, env);
-	}
-	if (path === '/api/auth/callback') {
-		return await handleGitHubCallback(request, env);
-	}
+	// Sprint 2a (A2): GitHub OAuth (handleGitHubAuth/Callback) and the
+	// programmatic dev-login endpoint (handleDevAuthLogin) are gone. Auth
+	// is now done by Cloudflare Access in front of the Worker; the SPA
+	// reads identity from /cdn-cgi/access/get-identity.
+	//
+	// /api/auth/logout is kept so the admin frontend's existing logout
+	// button doesn't 404; the handler returns the Cloudflare Access
+	// logout URL so the SPA can navigate there.
 	if (path === '/api/auth/logout' && method === 'POST') {
 		return await handleLogout(env, request);
-	}
-	// Dev-only programmatic login endpoint
-	if (path === '/api/auth/dev/login' && method === 'POST') {
-		return await handleDevAuthLogin(request, env);
 	}
 
 	// Password verification endpoint (no auth required)

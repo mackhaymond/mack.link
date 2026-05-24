@@ -18,9 +18,19 @@ import { logger } from './logger.js';
 //   Production env never has #2, so the bypass cannot trigger even if #1
 //   leaked into prod by accident.
 
-function isLocalHostHeader(request) {
-	const host = (request.headers.get('Host') || '').toLowerCase();
-	return /^(localhost|127\.0\.0\.1)(:\d+)?$/.test(host);
+// Pull the request host from request.url rather than the Host header.
+// In the Fetch API runtime (Workers, miniflare, vitest-pool-workers) the
+// Host header is one of the forbidden headers that `Headers.get('Host')`
+// returns null for - we'd silently fail-open if we relied on it. The
+// URL is what the runtime actually saw and is harder to spoof: the
+// edge sets the URL before our handler runs.
+function isLocalHostRequest(request) {
+	try {
+		const host = new URL(request.url).host.toLowerCase();
+		return /^(localhost|127\.0\.0\.1)(:\d+)?$/.test(host);
+	} catch {
+		return false;
+	}
 }
 
 /**
@@ -37,7 +47,7 @@ function isLocalHostHeader(request) {
  *    Access sessions.
  */
 export async function authenticateRequest(env, request) {
-	if (isDevBypassEligible(env) && isLocalHostHeader(request)) {
+	if (isDevBypassEligible(env) && isLocalHostRequest(request)) {
 		return getMockUser(env);
 	}
 
