@@ -4,6 +4,7 @@ import { getAnalyticsStatements, computeVisitorFingerprint, markVisitorIfNew } f
 import { dbGet } from '../db.js';
 import { getClientIP } from '../utils.js';
 import { verifyPasswordSession, renderPasswordPrompt, readPasswordSessionCookie } from './password.js';
+import { generateCspNonce, htmlCspWithNonce } from '../securityHeaders.js';
 
 export async function handleRedirect(request, env, requestLogger = logger, ctx) {
 	const url = new URL(request.url);
@@ -52,17 +53,11 @@ export async function handleRedirect(request, env, requestLogger = logger, ctx) 
 	if (link.passwordEnabled && link.passwordHash) {
 		const sessionToken = readPasswordSessionCookie(request, shortcode);
 		if (!sessionToken) {
-			return new Response(renderPasswordPrompt(shortcode), {
-				status: 401,
-				headers: { 'Content-Type': 'text/html; charset=utf-8' },
-			});
+			return passwordPromptResponse(shortcode);
 		}
 		const isValidSession = await verifyPasswordSession(env, shortcode, sessionToken);
 		if (!isValidSession) {
-			return new Response(renderPasswordPrompt(shortcode, 'Session expired. Please enter password again.'), {
-				status: 401,
-				headers: { 'Content-Type': 'text/html; charset=utf-8' },
-			});
+			return passwordPromptResponse(shortcode, 'Session expired. Please enter password again.');
 		}
 	}
 	// C9: filter bots, prefetch hints, and HEAD requests BEFORE building the
@@ -157,19 +152,49 @@ function detectPrefetch(request) {
 	return false;
 }
 
-function htmlError(env, request, status, title, subtitle) {
-	const html = renderErrorHtml({ status, title, subtitle });
-	return withCors(env, new Response(html, { status, headers: { 'Content-Type': 'text/html; charset=utf-8' } }), request);
+/**
+ * B3 (Sprint 2b): build the password-prompt response with a fresh per-request
+ * nonce and a matching nonce-based CSP. The inline `<style>` and `<script>`
+ * in renderPasswordPrompt carry `nonce="${nonce}"` and the CSP header
+ * accepts exactly that nonce; mismatched values would render the page blank.
+ */
+function passwordPromptResponse(shortcode, error = null) {
+	const nonce = generateCspNonce();
+	return new Response(renderPasswordPrompt(shortcode, error, nonce), {
+		status: 401,
+		headers: {
+			'Content-Type': 'text/html; charset=utf-8',
+			'Content-Security-Policy': htmlCspWithNonce(nonce),
+		},
+	});
 }
 
-function renderErrorHtml({ status, title, subtitle }) {
+function htmlError(env, request, status, title, subtitle) {
+	// B3 (Sprint 2b): generate per-request nonce so the error page's inline
+	// <style> survives the nonce-based CSP without 'unsafe-inline'.
+	const nonce = generateCspNonce();
+	const html = renderErrorHtml({ status, title, subtitle, nonce });
+	return withCors(
+		env,
+		new Response(html, {
+			status,
+			headers: {
+				'Content-Type': 'text/html; charset=utf-8',
+				'Content-Security-Policy': htmlCspWithNonce(nonce),
+			},
+		}),
+		request,
+	);
+}
+
+function renderErrorHtml({ status, title, subtitle, nonce }) {
 	return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>${escapeHtml(String(status))} • link.mackhaymond.co</title>
-  <style>
+  <style nonce="${nonce}">
     :root{--bg:#0b1220;--panel:rgba(17,24,39,.85);--muted:#9aa4b2;--text:#eef2f7;--accent:#2563eb;--accent-2:#60a5fa;--ring:rgba(96,165,250,.25)}
     *{box-sizing:border-box}
     body{margin:0;background:

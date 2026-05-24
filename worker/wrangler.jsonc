@@ -49,11 +49,48 @@
 			"database_id": "359a73e4-5445-41d3-ab10-2dc6f3bbc2f1"
 		}
 	],
+	// B1: Native Cloudflare Rate-Limit bindings (Sprint 2b). Replaces the
+	// hand-rolled counters-table limiter (`isRateLimitedPersistent` in
+	// utils.js). Limits are per-Cloudflare-location (eventually consistent
+	// across PoPs) and free — see SECURITY.md for the trade-off note.
+	//
+	// `simple.period` is restricted to 10 or 60 seconds by the binding API.
+	// The previous in-DB limiter used 1-hour windows; we collapsed each
+	// limit to a 60s window with a more-lenient burst budget (rather than
+	// a literal 1/60th conversion that would have been too strict for
+	// real admin use). Effective ceilings:
+	//   - LINKS_CREATE   10/min  (was 50/hr  → ~12x more lenient sustained)
+	//   - LINKS_MUTATE   30/min  (was 200/hr → ~9x  more lenient sustained)
+	//   - LINKS_BULK     10/min  (was 50/hr  → ~12x more lenient sustained)
+	//   - PASSWORD_VERIFY 10/min (unchanged — already 10/min per-shortcode)
+	//
+	// namespace_id values are account-scoped integers (as strings). They
+	// must be unique per binding unless you intentionally want two
+	// bindings to share counters. Picked 2001-2004 to leave 1000s free
+	// for future bindings.
+	"ratelimits": [
+		{
+			"name": "RL_LINKS_CREATE",
+			"namespace_id": "2001",
+			"simple": { "limit": 10, "period": 60 }
+		},
+		{
+			"name": "RL_LINKS_MUTATE",
+			"namespace_id": "2002",
+			"simple": { "limit": 30, "period": 60 }
+		},
+		{
+			"name": "RL_LINKS_BULK",
+			"namespace_id": "2003",
+			"simple": { "limit": 10, "period": 60 }
+		},
+		{
+			"name": "RL_PASSWORD_VERIFY",
+			"namespace_id": "2004",
+			"simple": { "limit": 10, "period": 60 }
+		}
+	],
 	"vars": {
-		// Matches the Access JWT email-derived login (payload.email.split('@')[0]).
-		// Sprint 2a moved identity from GitHub login (was 'mackhaymond') to Access
-		// email username part ('mack.haymond' for mack.haymond@icloud.com).
-		"AUTHORIZED_USER": "mack.haymond",
 		"SESSION_MAX_AGE": "28800",
 		"SESSION_COOKIE_NAME": "__Host-link_session",
 		"ALLOWED_ORIGINS": "https://link.mackhaymond.co",
@@ -97,6 +134,32 @@
 					"database_id": "ca9836da-1d7d-4c79-99cd-5c2734327b64"
 				}
 			],
+			// B1: Staging gets its own rate-limit namespaces (3001-3004) so
+			// burst PR-preview traffic doesn't share counters with prod.
+			// Same limits as prod since the binding is free regardless of
+			// namespace count.
+			"ratelimits": [
+				{
+					"name": "RL_LINKS_CREATE",
+					"namespace_id": "3001",
+					"simple": { "limit": 10, "period": 60 }
+				},
+				{
+					"name": "RL_LINKS_MUTATE",
+					"namespace_id": "3002",
+					"simple": { "limit": 30, "period": 60 }
+				},
+				{
+					"name": "RL_LINKS_BULK",
+					"namespace_id": "3003",
+					"simple": { "limit": 10, "period": 60 }
+				},
+				{
+					"name": "RL_PASSWORD_VERIFY",
+					"namespace_id": "3004",
+					"simple": { "limit": 10, "period": 60 }
+				}
+			],
 			"assets": {
 				"directory": "../admin/dist",
 				"binding": "ASSETS",
@@ -108,7 +171,6 @@
 				"AUTH_DISABLED": "true",
 				"ENVIRONMENT": "development",
 				"SESSION_ALLOW_INSECURE_COOKIES": "false",
-				"AUTHORIZED_USER": "mack.haymond",
 				"SESSION_MAX_AGE": "28800",
 				"SESSION_COOKIE_NAME": "__Host-link_session",
 				"ALLOWED_ORIGINS": "https://worker-staging.<your-subdomain>.workers.dev",

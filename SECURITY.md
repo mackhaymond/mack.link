@@ -120,8 +120,13 @@ silently. Bump together.
   for not-yours to avoid existence enumeration
 - Password-protected links: PBKDF2 100k SHA-256, constant-time compare,
   session token in httpOnly cookie scoped to `/{shortcode}`
-- Rate limits: 50/hr create, 200/hr update/delete, 50/hr bulk ops,
-  10/min password verify per (shortcode + IP)
+- Rate limits: Cloudflare native Rate-Limit binding (B1, Sprint 2b).
+  10/min create, 30/min update/delete, 10/min bulk ops, 10/min password
+  verify per (shortcode + IP). Counters are **per Cloudflare location**
+  (eventually consistent across PoPs), not global — a coordinated
+  attacker hitting multiple PoPs could exceed the per-PoP limit. Accepted
+  trade-off at this scale; the alternative (Durable Object-backed global
+  counter) trades latency for global accuracy.
 - Standard security headers on every response: HSTS (preload), nosniff,
   X-Frame-Options=DENY, Referrer-Policy=strict-origin-when-cross-origin,
   Permissions-Policy=interest-cohort=(), CSP for HTML

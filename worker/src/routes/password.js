@@ -2,7 +2,8 @@ import { withCors } from '../cors.js';
 import { verifyPasswordHash, generateSessionToken } from '../password.js';
 import { dbGet, dbRun } from '../db.js';
 import { getConfig } from '../config.js';
-import { isRateLimitedPersistent } from '../utils.js';
+import { getClientIP } from '../utils.js';
+import { checkRateLimit, rateLimitResponse } from '../rateLimit.js';
 import { logger } from '../logger.js';
 
 const PASSWORD_SESSION_TTL_SECONDS = 3600;
@@ -68,22 +69,15 @@ export async function handlePasswordVerification(request, env) {
 			);
 		}
 
-		// H5: rate-limit password attempts per (shortcode + IP) per minute.
-		const { rateLimits } = getConfig(env);
-		const limited = await isRateLimitedPersistent(env, request, {
-			key: `password:${shortcode}`,
-			limit: Number(rateLimits.passwordVerifyPerMinute || 10),
-			windowMs: 60 * 1000,
-		});
-		if (limited) {
-			return withCors(
-				env,
-				new Response(JSON.stringify({ error: 'Too many attempts. Please wait a minute and try again.' }), {
-					status: 429,
-					headers: { 'Content-Type': 'application/json' },
-				}),
-				request,
-			);
+		// H5: rate-limit password attempts per (shortcode + IP). Key combines
+		// both so brute-forcing one shortcode from one IP is bounded, but a
+		// shared-IP NAT can still attempt different shortcodes.
+		const rl = await checkRateLimit(env.RL_PASSWORD_VERIFY, `${shortcode}:${getClientIP(request)}`);
+		if (!rl.allowed) {
+			return rateLimitResponse(env, request, {
+				json: true,
+				message: 'Too many attempts. Please wait a minute and try again.',
+			});
 		}
 
 		// Get link data including password hash
@@ -224,9 +218,15 @@ export async function verifyPasswordSession(env, shortcode, sessionToken) {
 }
 
 /**
- * Render password prompt page
+ * Render the password prompt page.
+ *
+ * B3 (Sprint 2b): `nonce` is REQUIRED. The inline `<style>` and `<script>`
+ * blocks each get `nonce="${nonce}"` so the nonce-based CSP set by the
+ * caller (via `htmlCspWithNonce(nonce)`) accepts them. Callers MUST pass
+ * the same nonce to both this function AND `htmlCspWithNonce` on the
+ * response — mismatched nonces yield blank pages in the browser.
  */
-export function renderPasswordPrompt(shortcode, error = null) {
+export function renderPasswordPrompt(shortcode, error, nonce) {
 	const errorHtml = error ? `<div class="error">${escapeHtml(error)}</div>` : '';
 
 	return `<!DOCTYPE html>
@@ -235,7 +235,7 @@ export function renderPasswordPrompt(shortcode, error = null) {
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Password Required • link.mackhaymond.co</title>
-  <style>
+  <style nonce="${nonce}">
     :root{--bg:#0b1220;--panel:rgba(17,24,39,.85);--muted:#9aa4b2;--text:#eef2f7;--accent:#2563eb;--accent-2:#60a5fa;--ring:rgba(96,165,250,.25);--error:#ef4444}
     *{box-sizing:border-box}
     body{margin:0;background:
@@ -286,7 +286,7 @@ export function renderPasswordPrompt(shortcode, error = null) {
     </div>
   </div>
 
-  <script>
+  <script nonce="${nonce}">
     document.getElementById('passwordForm').addEventListener('submit', async (e) => {
       e.preventDefault();
 

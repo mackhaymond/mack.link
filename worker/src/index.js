@@ -1,7 +1,7 @@
 import { logger } from './logger.js';
 import { handleRequest } from './routes.js';
 import { withCors } from './cors.js';
-import { json, cleanupExpiredCounters, purgeExpiredLinks } from './utils.js';
+import { json, cleanupExpiredPasswordSessions, purgeExpiredLinks } from './utils.js';
 import { withSecurityHeaders } from './securityHeaders.js';
 import { purgeOldAnalytics } from './analytics.js';
 
@@ -89,10 +89,11 @@ export default {
 	 * 03:00 UTC). All cleanup runs are consolidated here:
 	 *   - H18 purgeOldAnalytics: drop analytics_day/_agg rows older than
 	 *     ANALYTICS_RETENTION_DAYS (default 365).
-	 *   - H7  cleanupExpiredCounters: drop counters rows whose `expires_at`
-	 *     is in the past (rate-limit buckets, password sessions, etc.).
-	 *     S2 removed the opportunistic 60s-gated hot-path call - this cron
-	 *     run is now the sole owner of counter cleanup.
+	 *   - B1  cleanupExpiredPasswordSessions: drop counters rows whose
+	 *     `expires_at` is past. Post-Sprint-2b, the counters table is no
+	 *     longer used for rate limiting (native binding owns that), so
+	 *     these rows are exclusively password-session tokens written by
+	 *     routes/password.js.
 	 *   - S2  purgeExpiredLinks: hard-delete links whose `expires_at` is
 	 *     past, mirroring the analytics policy (vs. the user-driven
 	 *     `archived` flag, which is preserved).
@@ -106,13 +107,13 @@ export default {
 		const purgeAnalytics = purgeOldAnalytics(env, retentionDays).catch((err) =>
 			logger.error('cron_purge_analytics_failed', { error: err?.message }),
 		);
-		const cleanupCounters = cleanupExpiredCounters(env).catch((err) =>
-			logger.error('cron_cleanup_counters_failed', { error: err?.message }),
+		const cleanupSessions = cleanupExpiredPasswordSessions(env).catch((err) =>
+			logger.error('cron_cleanup_password_sessions_failed', { error: err?.message }),
 		);
 		const purgeLinks = purgeExpiredLinks(env).catch((err) =>
 			logger.error('cron_purge_expired_links_failed', { error: err?.message }),
 		);
-		ctx.waitUntil(Promise.all([purgeAnalytics, cleanupCounters, purgeLinks]));
+		ctx.waitUntil(Promise.all([purgeAnalytics, cleanupSessions, purgeLinks]));
 	},
 };
 

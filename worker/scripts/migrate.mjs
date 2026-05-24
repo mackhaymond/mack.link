@@ -165,10 +165,16 @@ function maybeAddExpiresAtToCounters() {
 }
 
 function maybeAddOwnerIdToLinks() {
+	// B4b (Sprint 2b): prefer OWNER_EMAIL for the backfill identity. Fresh
+	// installs that already have the new email-based identity from day 1
+	// land directly on the right shape; legacy installs (AUTHORIZED_USER
+	// without OWNER_EMAIL) get the historical `gh:<login>` placeholder and
+	// then the 006 step renames it.
+	const ownerEmail = process.env.OWNER_EMAIL;
 	const authorizedUser = process.env.AUTHORIZED_USER || 'legacy';
-	const ownerId = `gh:${authorizedUser}`;
+	const ownerId = ownerEmail || `gh:${authorizedUser}`;
+	const displayLogin = ownerEmail || authorizedUser;
 	const now = Date.now();
-	// Ensure users table exists before we INSERT into it.
 	execSql(
 		`CREATE TABLE IF NOT EXISTS users (
 			id TEXT PRIMARY KEY,
@@ -185,17 +191,86 @@ function maybeAddOwnerIdToLinks() {
 		execIdempotentAlter(`ALTER TABLE links ADD COLUMN owner_id TEXT;`);
 		execSql(
 			`INSERT OR IGNORE INTO users (id, github_login, email, created_at, updated_at)
-			 VALUES ('${ownerId}', '${authorizedUser}', NULL, ${now}, ${now});`,
+			 VALUES ('${ownerId}', '${displayLogin}', ${ownerEmail ? `'${ownerEmail}'` : 'NULL'}, ${now}, ${now});`,
 		);
 		execSql(`UPDATE links SET owner_id = '${ownerId}' WHERE owner_id IS NULL;`);
 	} else {
 		// Still backfill any null rows in case a previous partial run left them.
 		execSql(
 			`INSERT OR IGNORE INTO users (id, github_login, email, created_at, updated_at)
-			 VALUES ('${ownerId}', '${authorizedUser}', NULL, ${now}, ${now});`,
+			 VALUES ('${ownerId}', '${displayLogin}', ${ownerEmail ? `'${ownerEmail}'` : 'NULL'}, ${now}, ${now});`,
 		);
 		execSql(`UPDATE links SET owner_id = '${ownerId}' WHERE owner_id IS NULL;`);
 		console.log('  · links.owner_id already present (backfill verified)');
+	}
+}
+
+/**
+ * B4b (Sprint 2b): rename owner_id from the legacy `gh:<localpart>` form
+ * to the post-Access email-based identity. See 006_owner_id_email.sql for
+ * the full design rationale.
+ *
+ * Two invocation modes:
+ *   1. OWNER_EMAIL=user@example.com
+ *        -> renames `gh:user` to `user@example.com`
+ *        -> the typical prod path
+ *   2. OLD_OWNER_ID=gh:ai-dev NEW_OWNER_ID=ai-dev
+ *        -> raw rename, no email validation
+ *        -> escape hatch for synthetic identities (local dev's mock
+ *           'ai-dev' user, test fixtures) or any non-email scheme
+ *
+ * Mode 1 also accepts OLD_OWNER_ID to override the `gh:<localpart>` guess
+ * when legacy data has a non-matching shape (e.g. `gh:mackhaymond` while
+ * the new email is mack.haymond@icloud.com).
+ *
+ * Idempotent: skips with a log line if no rename args are provided OR if
+ * the old row doesn't exist (already migrated / fresh install).
+ *
+ * Safe edge cases:
+ *   - Target row already exists (partial prior migration): point links
+ *     at the new row and delete the old user row instead of UPDATE on PK.
+ */
+function maybeRenameOwnerIdToEmail() {
+	const email = process.env.OWNER_EMAIL;
+	const explicitOld = process.env.OLD_OWNER_ID;
+	const explicitNew = process.env.NEW_OWNER_ID;
+
+	let oldId;
+	let newId;
+	if (explicitOld && explicitNew) {
+		oldId = explicitOld;
+		newId = explicitNew;
+	} else if (email) {
+		if (!email.includes('@')) {
+			throw new Error(`OWNER_EMAIL must be a valid email, got: ${email}`);
+		}
+		oldId = explicitOld || `gh:${email.split('@')[0]}`;
+		newId = email;
+	} else {
+		console.log('  · neither OWNER_EMAIL nor OLD_OWNER_ID+NEW_OWNER_ID set, skipping owner_id rename');
+		return;
+	}
+
+	const result = execSqlJson(`SELECT id FROM users WHERE id = '${oldId}';`);
+	const oldRows = (result?.[0]?.results) || [];
+	if (oldRows.length === 0) {
+		console.log(`  · no rows with owner_id ${oldId} to rename (already migrated or fresh install)`);
+		return;
+	}
+
+	const targetResult = execSqlJson(`SELECT id FROM users WHERE id = '${newId}';`);
+	const targetExists = ((targetResult?.[0]?.results) || []).length > 0;
+	const now = Date.now();
+
+	if (targetExists) {
+		console.log(`  + rename owner_id ${oldId} -> ${newId} (target row exists; merging)`);
+		execSql(`UPDATE links SET owner_id = '${newId}' WHERE owner_id = '${oldId}';`);
+		execSql(`DELETE FROM users WHERE id = '${oldId}';`);
+	} else {
+		console.log(`  + rename owner_id ${oldId} -> ${newId}`);
+		const emailUpdate = newId.includes('@') ? `, email = '${newId}'` : '';
+		execSql(`UPDATE users SET id = '${newId}'${emailUpdate}, updated_at = ${now} WHERE id = '${oldId}';`);
+		execSql(`UPDATE links SET owner_id = '${newId}' WHERE owner_id = '${oldId}';`);
 	}
 }
 
@@ -214,6 +289,7 @@ const PROGRAMMATIC_STEPS = {
 	'002_counters_expiry.sql': maybeAddExpiresAtToCounters,
 	'003_owner_id.sql': maybeAddOwnerIdToLinks,
 	'005_unique_visitors.sql': maybeAddUniqueClicks,
+	'006_owner_id_email.sql': maybeRenameOwnerIdToEmail,
 };
 
 function main() {
@@ -235,7 +311,11 @@ function main() {
 		const programmatic = PROGRAMMATIC_STEPS[f];
 		if (programmatic) programmatic();
 		const sql = readFileSync(join(MIGRATIONS_DIR, f), 'utf8');
-		if (sql.trim().length > 0) execSql(sql);
+		// Skip comment-only migrations (programmatic-only steps like 006 use
+		// the .sql file as a documentation marker). Strip line comments and
+		// whitespace; if anything's left, send the original to wrangler.
+		const stripped = sql.replace(/^\s*--.*$/gm, '').trim();
+		if (stripped.length > 0) execSql(sql);
 		execSql(`INSERT INTO migrations (id, applied_at) VALUES ('${f}', ${Date.now()});`);
 		ran++;
 	}

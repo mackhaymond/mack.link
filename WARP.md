@@ -263,6 +263,7 @@ This project runs as a single Cloudflare Worker that serves an embedded React ad
 ### Performance Optimizations
 - Edge-first architecture with Cloudflare Workers
 - Efficient D1 queries with proper indexing
+- D1 Sessions API + read replication (B2, Sprint 2b): `/api/*` requests are wrapped in `env.DB.withSession(bookmark)`; the admin client round-trips an `x-d1-bookmark` request/response header to keep read-after-write consistency across requests while still reading from the nearest replica. Hot-path (redirect/analytics) intentionally bypasses sessions — those paths are eventually consistent by design. Read replication itself is a dashboard toggle (D1 → Settings → Enable Read Replication); the code path works unchanged whether replication is on or off.
 - Frontend code splitting and lazy loading
 - Optimized bundle size with Vite
 - Caching headers for static assets
