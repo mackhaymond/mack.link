@@ -91,7 +91,7 @@
 				{
 					"binding": "DB",
 					"database_name": "mack-link-staging",
-					"database_id": "REPLACE_ME_AFTER_wrangler_d1_create"
+					"database_id": "ca9836da-1d7d-4c79-99cd-5c2734327b64"
 				}
 			],
 			"assets": {
