@@ -8,24 +8,25 @@ Navigate to your repository → Settings → Secrets and variables → Actions �
 
 ### Required Secrets
 
-#### Existing Secrets (already configured)
-- `CLOUDFLARE_API_TOKEN` - Cloudflare API token for deployment (needs Workers Scripts: Edit + D1: Edit on the account)
+#### Production deploy
+- `CLOUDFLARE_API_TOKEN` - Cloudflare API token (needs Workers Scripts: Edit + D1: Edit on the account)
 - `CLOUDFLARE_ACCOUNT_ID` - Your Cloudflare account ID
-- `JWT_SECRET` - Secret key for signing JWT tokens
-- `OAUTH_CLIENT_SECRET` - GitHub OAuth application client secret
-
-#### Required for production deploy
-- `OAUTH_CLIENT_ID` - Your GitHub OAuth application client ID
 
 #### Required for PR preview deploys (S3)
 - `CF_WORKERS_SUBDOMAIN` - Your account's workers.dev subdomain (the bit between the worker name and `.workers.dev`). Find via `wrangler whoami` or in the Cloudflare dashboard under Workers → "Your subdomain". Example: if your prod worker URL is `worker.example-acct.workers.dev`, set this to `example-acct`. The preview job uses it to build the staging URL: `https://worker-staging.<CF_WORKERS_SUBDOMAIN>.workers.dev`.
 
-### Setting up OAUTH_CLIENT_ID
+### Removed after Sprint 2a (Cloudflare Access migration)
 
-1. Go to [GitHub Developer Settings](https://github.com/settings/developers)
-2. Find your OAuth App for this project
-3. Copy the "Client ID" value
-4. Add it as a repository secret named `OAUTH_CLIENT_ID`
+The following secrets are no longer used by CI and can be deleted from
+the repo's Actions secrets:
+
+- `OAUTH_CLIENT_ID` — Worker no longer runs GitHub OAuth (Cloudflare Access does)
+- `OAUTH_CLIENT_SECRET` — same
+- `JWT_SECRET` — Worker no longer signs session JWTs
+
+The matching Worker secrets should also be deleted from production. See
+[SECURITY.md](../SECURITY.md) for the explicit `wrangler secret delete`
+commands.
 
 ### Setting up PR preview deploys (S3)
 
@@ -46,21 +47,21 @@ Until steps 1+2 are done, the preview job auto-detects the placeholder and skips
 
 ## Environment Configuration
 
-The CI/CD pipeline will automatically create the following environment configurations:
+The CI/CD pipeline writes a `.env.local` (validate job) and `.env.production` (preview / deploy jobs) for the admin build:
 
-### For Testing (validation job)
+### Validate job
 ```
 VITE_API_BASE=http://localhost:8787
 VITE_WORKER_DOMAIN=localhost:8787
 VITE_GITHUB_CLIENT_ID=test_client_id
 ```
 
-### For Production (deploy job)
+`VITE_GITHUB_CLIENT_ID` is unused after Sprint 2a (the SPA no longer runs OAuth) but is kept in the build env as a stable build-time string until the next admin cleanup pass — Vite's `import.meta.env` treats it as a constant whether or not anything reads it.
+
+### Production deploy job
 ```
 VITE_API_BASE=https://link.mackhaymond.co
 VITE_WORKER_DOMAIN=link.mackhaymond.co
-# Optional at runtime; used at admin build time only
-VITE_GITHUB_CLIENT_ID=${secrets.OAUTH_CLIENT_ID}
 ```
 
 ## Local Development
@@ -68,15 +69,11 @@ VITE_GITHUB_CLIENT_ID=${secrets.OAUTH_CLIENT_ID}
 For local development, create an `admin/.env.local` file with appropriate values:
 
 ```bash
-# For local development with local worker
 VITE_API_BASE=http://localhost:8787
 VITE_WORKER_DOMAIN=localhost:8787
-VITE_GITHUB_CLIENT_ID=your_github_oauth_client_id
-
-# OR for local development with production API
-VITE_API_BASE=https://link.mackhaymond.co
-VITE_WORKER_DOMAIN=link.mackhaymond.co
-VITE_GITHUB_CLIENT_ID=your_github_oauth_client_id
+VITE_AUTH_DISABLED=true
 ```
+
+`VITE_AUTH_DISABLED=true` tells the admin SPA to use the hardcoded mock user instead of fetching `/cdn-cgi/access/get-identity` (Cloudflare Access isn't running in local dev).
 
 The `.env.local` file is git-ignored and will not be committed to the repository.

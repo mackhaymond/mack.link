@@ -226,12 +226,16 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Build worker with embedded admin
+      - name: Build admin SPA for production
+        # Sprint 2a (A5): VITE_GITHUB_CLIENT_ID is no longer read by the
+        # admin (no in-app OAuth) but Vite treats import.meta.env values
+        # as build-time constants - emit a stable dummy until the next
+        # admin cleanup pass to keep the build deterministic.
         run: |
           cat > admin/.env.production << EOL
           VITE_API_BASE=https://link.mackhaymond.co
           VITE_WORKER_DOMAIN=link.mackhaymond.co
-          VITE_GITHUB_CLIENT_ID=${{ secrets.OAUTH_CLIENT_ID }}
+          VITE_GITHUB_CLIENT_ID=unused-post-access-migration
           EOL
           npm run build
 
@@ -243,6 +247,11 @@ jobs:
       # table) and block deploys for no real safety win.
 
       - name: Deploy with Wrangler
+        # Sprint 2a (A5): the prior env: block injected JWT_SECRET +
+        # GITHUB_CLIENT_ID + GITHUB_CLIENT_SECRET on this step. None of
+        # those are read by the Worker anymore (Access handles auth at
+        # the edge; Worker only needs TEAM_DOMAIN + POLICY_AUD, both of
+        # which are non-secret vars in wrangler.jsonc).
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -250,14 +259,18 @@ jobs:
           workingDirectory: worker
           command: deploy --config wrangler.jsonc
           wranglerVersion: ${{ env.WRANGLER_VERSION }}
-        env:
-          JWT_SECRET: ${{ secrets.JWT_SECRET }}
-          GITHUB_CLIENT_SECRET: ${{ secrets.OAUTH_CLIENT_SECRET }}
-          GITHUB_CLIENT_ID: ${{ secrets.OAUTH_CLIENT_ID }}
 
       - name: Smoke test deployment
+        # Sprint 2a (A4): hitting /admin in prod returns 302 to Cloudflare
+        # Access (login challenge). Accept 200/302 so this step doesn't
+        # break the day the deploy succeeds. validate:prod (run separately
+        # via npm run validate:prod) does the deeper Access-aware checks.
         run: |
           URL="https://link.mackhaymond.co"
           curl -fsS -o /dev/null "$URL/"
-          curl -fsS -o /dev/null "$URL/admin"
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$URL/admin")
+          if [ "$STATUS" != "200" ] && [ "$STATUS" != "302" ]; then
+            echo "Unexpected /admin status: $STATUS"
+            exit 1
+          fi
         shell: bash
