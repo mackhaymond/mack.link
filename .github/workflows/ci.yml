@@ -10,7 +10,10 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  NODE_VERSION: '20'
+  # Wrangler 4.x requires Node >=22; the wrangler-action auto-installs the
+  # latest wrangler@4 and refuses to run on older Node, so this must stay
+  # in lockstep with WRANGLER_VERSION.
+  NODE_VERSION: '22'
   WRANGLER_VERSION: '4'
 
 jobs:
