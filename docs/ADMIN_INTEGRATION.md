@@ -35,11 +35,12 @@ We decided to embed the React admin panel directly into the Cloudflare Worker an
 
 ### Technical Details
 
-#### Asset Embedding Strategy
-- React build files are converted to a JavaScript module (`admin-assets.js`)
-- Files are base64-encoded for binary assets, stored as strings for text
-- Build script automatically generates the embedded assets during deployment
-- Total embedded size: ~728KB (within Cloudflare Worker limits)
+#### Asset Serving Strategy (S1: Static Assets binding)
+- Cloudflare Workers Static Assets binding (`env.ASSETS`) serves `admin/dist/` directly from Cloudflare's CDN.
+- The Worker JS no longer embeds the React build; the per-deploy worker bundle dropped from ~888 KB to ~70 KB.
+- `routes/admin.js` is a ~10-LOC delegator that strips the `/admin` URL prefix and forwards to `env.ASSETS.fetch()`.
+- SPA routing (deep links like `/admin/dashboard`) is handled by Cloudflare via `not_found_handling: "single-page-application"` in `wrangler.jsonc` — no worker-side fallback table.
+- Static-asset requests are free on Cloudflare Workers and CDN-cached automatically.
 
 #### Routing Strategy
 ```javascript

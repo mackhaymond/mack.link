@@ -9,7 +9,7 @@ This is the Cloudflare Worker for mack.link. Most development tasks should be ru
 - Start Worker in dev (builds admin assets and runs wrangler dev):
   - `npm run dev:worker`
   - or start both Worker + Admin: `npm run dev`
-- Build only the Worker (after building admin):
+- Build only the admin app (the worker bundle no longer embeds it since S1; it's served via Static Assets):
   - `npm -w worker run build`
 - Deploy to production (builds admin + worker, then deploys):
   - `npm run deploy`
@@ -21,6 +21,5 @@ This is the Cloudflare Worker for mack.link. Most development tasks should be ru
   - `npm -w worker run test`
 
 ## Notes
-- The admin UI is embedded into the Worker during the build: `npm -w worker run build:admin`.
-- The generated file `worker/src/admin-assets.js` is ignored by git and will be recreated by the build step.
+- Since S1, the admin UI is served by Cloudflare's Static Assets binding (`env.ASSETS`) from `admin/dist/`. The Worker bundle no longer embeds it; `worker/src/routes/admin.js` is a thin delegator that strips the `/admin` URL prefix and forwards to `env.ASSETS.fetch()`. The `directory` path in `wrangler.jsonc` (`../admin/dist`) is resolved relative to where `wrangler deploy` runs (the `worker/` workspace).
 

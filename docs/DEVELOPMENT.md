@@ -84,8 +84,9 @@ mack.link/
 │   │   │   └── redirect.js    # Shortcode redirects
 │   │   ├── auth.js            # GitHub OAuth & sessions
 │   │   ├── db.js              # D1 database operations
-│   │   ├── analytics.js       # Click tracking & reporting
-│   │   └── admin-assets.js    # Embedded React build (auto-generated)
+│   │   └── analytics.js       # Click tracking & reporting
+│   │   (admin SPA is served via Cloudflare's Static Assets binding from
+│   │    ../admin/dist, configured in wrangler.jsonc - see S1)
 │   ├── wrangler.jsonc         # Worker configuration
 │   └── package.json
 ├── 📁 admin/                   # React Admin Panel (Frontend)

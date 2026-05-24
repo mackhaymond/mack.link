@@ -4,8 +4,7 @@
 	"private": true,
 	"type": "module",
 	"scripts": {
-		"build": "npm -w admin run build && node scripts/build-admin.js",
-		"assets:embed": "node scripts/build-admin.js",
+		"build": "npm -w admin run build",
 		"deploy": "npm run build && wrangler deploy",
 		"dev": "npm run build && wrangler dev",
 		"dev:fast": "wrangler dev",

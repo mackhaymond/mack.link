@@ -39,10 +39,12 @@ jobs:
         run: npm run lint
 
       - name: Build
-        # Build must run before Test because worker/src/routes/admin.js imports
-        # the generated worker/src/admin-assets.js (gitignored) at module scope.
-        # On a fresh CI checkout that file doesn't exist yet, so the test
-        # import graph crashes if we test first.
+        # S1: Build runs before Test because vitest-pool-workers loads
+        # worker/wrangler.jsonc, which declares an `assets` binding pointing
+        # at ../admin/dist. Miniflare expects that directory to exist when
+        # the worker boots; running the admin build first guarantees it.
+        # Vite reads test-only API base / OAuth client id from .env.local
+        # (gitignored) so VITE_GITHUB_CLIENT_ID isn't undefined at build time.
         run: |
           cat > admin/.env.local << EOL
           VITE_API_BASE=http://localhost:8787
@@ -53,9 +55,6 @@ jobs:
 
       - name: Test
         run: npm test
-
-      - name: Check bundle size
-        run: npm run check:bundle-size
 
   deploy:
     name: Deploy (production)

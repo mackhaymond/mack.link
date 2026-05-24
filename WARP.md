@@ -11,7 +11,7 @@ This file provides guidance to WARP (warp.dev) when working with code in this re
   - Worker only: `npm run dev:worker`
   - Admin only: `npm run dev:admin`
   - Fast worker (skip pre-embed): `npm run dev:worker:fast`
-- Build: `npm run build` (admin → embed → worker)
+- Build: `npm run build` (shared + admin; the worker bundle no longer embeds admin since S1)
 - Deploy: `npm run deploy`
 - Validate: `npm run validate:local` | `npm run validate:prod` | `npm run validate:url --url="https://staging.example.com"`
 - Database:
@@ -157,7 +157,7 @@ This project runs as a single Cloudflare Worker that serves an embedded React ad
 
 **Cloudflare Worker** (`/worker/`)
 - **Entry Point**: `src/index.js` - Main worker with request lifecycle management
-- **Admin UI**: `src/routes/admin.js` serves the embedded React app at `/admin` using assets from `src/admin-assets.js` (generated at build time)
+- **Admin UI**: `src/routes/admin.js` is a thin delegator (~10 LOC) that strips the `/admin` URL prefix and forwards to `env.ASSETS.fetch()` (Cloudflare Static Assets binding, configured in `wrangler.jsonc` with `directory: "../admin/dist"`). S1 replaced the previous embed pipeline so the React build is served by Cloudflare's CDN instead of being inlined into the Worker JS bundle.
 - **Routing**: `src/routes.js` handles request dispatching between admin, redirects, and API
 - **Authentication**: `src/auth.js` manages GitHub OAuth and session verification
 - **Password System**: `src/password.js` provides PBKDF2 hashing with Web Crypto API
@@ -200,10 +200,9 @@ This project runs as a single Cloudflare Worker that serves an embedded React ad
 
 ### Key Configuration Files
 
-- `worker/wrangler.jsonc`: Worker deployment config, environment variables, D1 binding
+- `worker/wrangler.jsonc`: Worker deployment config, environment variables, D1 binding, Static Assets binding (S1)
 - `admin/vite.config.js`: Frontend build configuration
 - `admin/tailwind.config.js`: Tailwind CSS customization
-- `worker/scripts/build-admin.js`: Embeds admin UI into worker assets
 
 ## Development Patterns
 

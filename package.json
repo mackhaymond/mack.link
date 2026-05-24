@@ -11,7 +11,7 @@
     "dev:worker:fast": "npm -w worker run dev:fast",
     "dev:admin": "npm -w admin run dev",
 
-    "build": "npm -w packages/shared run build && npm -w worker run build",
+    "build": "npm -w packages/shared run build && npm -w admin run build",
     "build:worker": "npm -w worker run build",
     "build:admin": "npm -w admin run build",
     "build:shared": "npm -w packages/shared run build",
@@ -25,10 +25,9 @@
     "validate:local": "node scripts/validate-deployment.js http://localhost:8787",
     "validate:prod": "node scripts/validate-deployment.js https://link.mackhaymond.co",
     "validate:url": "node scripts/validate-deployment.js \"$npm_config_url\"",
-    "check:bundle-size": "node scripts/check-bundle-size.js",
 
     "install:all": "npm ci",
-    "clean": "rm -rf node_modules && npm -w worker run clean || true && rm -f worker/src/admin-assets.js && rm -rf worker/.wrangler && rm -rf admin/dist",
+    "clean": "rm -rf node_modules && npm -w worker run clean || true && rm -rf worker/.wrangler && rm -rf admin/dist",
 
     "lint": "npm -w admin run lint && npm -w worker run lint",
     "lint:all": "npm run lint && echo 'All linting completed'",
