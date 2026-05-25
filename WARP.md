@@ -17,7 +17,6 @@ This file provides guidance to WARP (warp.dev) when working with code in this re
 - Database:
   - Apply schema (local): `npm run db:apply:local`
   - Apply schema (prod): `npm run db:apply:prod`
-  - Apply schema (staging, local-only since the PR preview pipeline was retired): `D1_DATABASE_NAME=mack-link-staging npm -w worker run db:apply` — the JS migration runner reads `D1_DATABASE_NAME` (default `mack-link`) so the same script owns prod + staging without forking. Only useful if you still run `wrangler dev --env staging` locally; CI no longer applies staging migrations.
   - Reconcile analytics (local|prod): `npm run db:reconcile:analytics:local` | `npm run db:reconcile:analytics:prod`
   - One-off query: `npm run db:q:local --sql="SELECT COUNT(*) FROM links;"` (or `db:q:prod`)
 - Logs (long-running):
