@@ -102,28 +102,25 @@
 	"triggers": {
 		"crons": ["0 3 * * *"]
 	},
-	// Staging env (H22 + S3). The PR-preview deploy job in
-	// .github/workflows/ci.yml targets `worker-staging` and runs
-	// `wrangler deploy --env staging`.
+	// Staging env — local-only since the PR preview pipeline was removed.
+	// Originally introduced as Sprint 1 (H22 + S3) for CI-driven PR previews;
+	// that workflow is gone. The env block is kept so the staging Worker
+	// (`worker-staging.<subdomain>.workers.dev`) + staging D1
+	// (`mack-link-staging`) remain usable for ad-hoc local testing via:
+	//   - `wrangler dev --env staging`
+	//   - `wrangler deploy --env staging` (manual, from a dev machine)
+	//   - `D1_DATABASE_NAME=mack-link-staging npm -w worker run db:apply`
 	//
-	// USER ONE-TIME SETUP (required before previews actually deploy):
-	//   1. wrangler d1 create mack-link-staging
-	//   2. Paste the printed database_id into env.staging.d1_databases[0].database_id below
-	//   3. Replace ALL `<your-subdomain>` placeholders in env.staging.vars
-	//      with your account's workers.dev subdomain (find via `wrangler whoami`)
-	//   4. Add a GitHub Actions secret `CF_WORKERS_SUBDOMAIN` with the same value
-	//
-	// Until step 1+2 is done, the CI preview job auto-detects the
-	// REPLACE_ME_AFTER_wrangler_d1_create marker and skips with a warning
-	// instead of failing the PR (see ci.yml).
+	// If you decide you don't need the staging Worker at all, you can
+	// delete the whole `env.staging` block, then run:
+	//   wrangler delete --name worker-staging --force
+	//   wrangler d1 delete mack-link-staging --force
 	//
 	// Staging runs in auth-bypass mode (AUTH_DISABLED=true +
-	// ENVIRONMENT=development) so reviewers can test against the preview URL
-	// without GitHub OAuth round trips. The runtime dev-auth defense-in-depth
-	// check (Host must be localhost/127.0.0.1) is intentionally bypassed in
-	// staging via the env flags - staging is itself a non-prod environment.
-	// JWT_SECRET still needs to be set as a wrangler secret on the worker
-	// (any non-empty value works for staging since sessions are mock).
+	// ENVIRONMENT=development) so you can hit it without going through
+	// Cloudflare Access. The runtime dev-auth defense-in-depth check
+	// (Host must be localhost/127.0.0.1) is intentionally bypassed in
+	// staging via the env flags — staging is itself a non-prod environment.
 	"env": {
 		"staging": {
 			"name": "worker-staging",

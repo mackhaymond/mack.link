@@ -19,6 +19,18 @@ Cloudflare Access integration, no destructive D1 changes.
 > renames historical `gh:*` `owner_id` rows. This analysis treats the
 > Sprint 2b list as **done**, not pending.
 
+> **Workflow decision (after this analysis was first written).** The
+> author chose to remove the PR preview pipeline entirely and move to a
+> direct-merge-to-main workflow (test locally, push to main). The
+> `preview` job has been deleted from `.github/workflows/ci.yml` and
+> `CF_WORKERS_SUBDOMAIN` from the docs. The staging Worker
+> (`worker-staging.<subdomain>.workers.dev`) + staging D1
+> (`mack-link-staging`) are kept for ad-hoc local `wrangler dev --env
+> staging` use; they're no longer CI-driven. The sections of this
+> document that recommended per-PR previews (originally rank #4 in §3,
+> the §9 bootstrap-action findings) have been struck or annotated to
+> reflect this decision; the rest of the analysis stands.
+
 ---
 
 ## 1. Executive summary
@@ -43,9 +55,9 @@ because it's reversible per-file.
 2. **Adopt Hono** for routing. ~200 LOC of `withCors()` / try-catch /
    string-dispatch boilerplate goes away; Hono's RPC client unlocks
    end-to-end types between `worker/` and `admin/` once TS lands. ~2 days.
-3. **Per-PR Worker name** for previews (`worker-pr-{N}` instead of the
-   single shared `worker-staging` slot), with a `pull_request.closed`
-   cleanup job. Keeps the shared staging D1 (avoids D1 quota). ~0.5 day.
+3. **Sentry on Workers** (`@sentry/cloudflare`). One `Sentry.withSentry()`
+   wrapper, Developer tier ($0, 5K errors/mo). Real prod-error visibility
+   to replace the 10%-sampled Workers Logs blind spot. ~0.5 day.
 
 **What NOT to do**:
 
@@ -58,9 +70,8 @@ because it's reversible per-file.
   right path; a full rewrite is unforced risk.
 - **Don't adopt Prisma on D1.** 216× the Drizzle bundle, 4× slower cold
   start, D1 adapter still Preview.
-- **Don't migrate to per-PR D1 databases** until you regularly have 5+
-  concurrent open PRs. Free plan caps at 10 D1 databases per account;
-  cleanup-failure orphans will bite you before isolation pays back.
+- **Don't reinstate PR previews** (per the workflow decision above).
+  Originally rank #4; now retired as a recommendation.
 
 ---
 
@@ -88,6 +99,7 @@ Honest critique. Adjective-free.
 | Area | The issue |
 |---|---|
 | **Routing dispatch** (`worker/src/routes.js`, `routes/routerApi.js`) | Hand-rolled string-prefix `if/switch`. Currently fine — 16 API endpoints, all in two files. But every new route is a manual edit in two places (URL prefix in `routes.js`, handler dispatch in `routerApi.js`), and CORS / error wrapping / auth gating is ad-hoc per handler. This is what Hono fixes. |
+| **`.github/CI.md`** | Doc is stale (mentions embedded admin, JWT/OAuth secrets, old compatibility_date — all pre-Sprint-1/2a). Separate cleanup pass needed; not in this analysis's scope. |
 | **Raw SQL in `worker/src/routes/routesLinks.js`** | 591 LOC, 20 SQL strings. All parameterised, but the same column list (`shortcode, url, description, redirect_type, ...`) is repeated across getAll / get / create / update. Adding a new `links` column is 4 edits across one file. |
 | **`worker/src/analytics.js` `buildAnalyticsStatements()`** | Generates ~24 INSERT-OR-CONFLICT statements per click. Hand-stitched table/dimension matrix. Works, but unreadable; the type of code that gets broken every time someone adds a dimension. This is the strongest argument for Drizzle. |
 | **`admin/src/components/CreateLinkForm.jsx` (493 LOC) + `EditLinkModal.jsx` (452 LOC)** | Hand-rolled form state per field, manual validation (`validateField()`), real-time + on-submit dual validation. Half the LOC is form bookkeeping. React Hook Form + Zod would cut this roughly in half. |
@@ -100,8 +112,6 @@ Honest critique. Adjective-free.
 | Area | Why it hurts |
 |---|---|
 | **`@cloudflare/vitest-pool-workers@0.12.21` pin** | Documented in `SECURITY.md` as the source of 5 dev-only npm-audit advisories. Newer versions removed `defineWorkersProject`. **Cloudflare ships an automated codemod for the v3→v4 migration** (`npx jscodeshift -t https://unpkg.com/@cloudflare/vitest-pool-workers/dist/codemods/vitest-v3-to-v4.mjs --parser=ts vitest.config.js`). This is a 1-day fix that closes a documented advisory. |
-| **Single shared staging slot for PR previews** | Two open PRs = the later one stomps the earlier. Reviewers can't trust the URL. `worker-staging.{subdomain}.workers.dev` is fine as a per-branch URL — change to `worker-pr-{N}` and isolation is automatic. |
-| **No PR preview cleanup** | Staging slot stays live forever (currently fine because it's one slot). Once previews are per-PR, you need a `pull_request.closed` cleanup or the account fills with orphaned workers. |
 | **Plain JavaScript everywhere except `packages/shared/`** | 21 worker files + 32 admin files (`.js` / `.jsx`), no `tsconfig.json` at the workspace root. The `users` / `links` / `analytics-context` object shapes are duplicated across worker + admin in implicit form. Every bug in this codebase that I can identify from the PR history (`mack.haymond` vs `mackhaymond`, the `gh:*` owner_id rename, the JSON parse / validation 400s, the H12 prefetch detection edge cases) would have been caught by a type checker. |
 | **No error reporting** | `console.log` everywhere; Workers Observability captures it at 10% sampling. When a prod 500 hits, you find out when it bites you, not when it happens. Sentry Developer tier ($0, 5K errors/mo) closes this. |
 | **`admin/src/index.css` has 250+ LOC of `.react-datepicker*` theming** | No actual react-datepicker dependency — the admin uses native `<input type="datetime-local">`. The CSS is dead. (Verified: zero `react-datepicker` references in `admin/src/`.) |
@@ -122,25 +132,24 @@ ease. Items rejected and ranked low are at the bottom **with the reason**.
 | 1 | **Incremental TypeScript** (config + `packages/shared` first, then `worker/src/access.js` + `auth.js` + `db.js`, then leaves) | Adds `tsconfig.json`s with `allowJs: true`; converts `.js`→`.ts` file-by-file behind `// @ts-check` guards; ambient types in `@mack-link/shared` for `User`/`Link`/`AnalyticsContext` | 5-8 days spread over 2-3 weeks | Low (reversible per-file) | $0 | Eliminates the entire class of bugs the project has hit (`mack.haymond` vs `mackhaymond`, missing nullable handling, owner_id shape drift). Permanently codifies the JSDoc that's already there. Unlocks Hono RPC + Drizzle inference downstream. |
 | 2 | **Migrate vitest-pool-workers 0.12.21 → 0.16.x** via Cloudflare's codemod | `npx jscodeshift -t .../codemods/vitest-v3-to-v4.mjs` rewrites `defineWorkersProject` → `cloudflareTest()` plugin; lifts Vitest to 4.1+ | 1 day | Low (codemod is official + scripted) | $0 | Closes the 5 dev-only `npm audit` advisories documented in `SECURITY.md`. Unlocks Vitest 4.x features (JSON snapshots, better watch mode). Removes the only PR-flagged "deferred" item from PR #37. |
 | 3 | **Hono for the API router** | `worker/src/routes.js` + `routes/routerApi.js` collapse to ~80 LOC; CORS / security-headers / auth become declarative middleware (`app.use(cors())`, `app.use('/api/*', requireAuth)`); routes get typed params + `c.req.valid('json', schema)` validation | 2-3 days | Low-medium (Sprint 2a's `Cf-Access-Jwt-Assertion` handling must port verbatim — there's an existing test fixture so this is verifiable) | $0 (Hono adds ~14 KB gzipped to a ~135 KB Worker = 10% bundle growth, well under the 1 MB cap) | Eliminates ~200 LOC of `withCors()` + try/catch + string dispatch. Sets up Hono RPC client (`hc<typeof app>`) — Sprint 4 candidate. Cited Cloudflare-internal usage; 38.9M weekly npm downloads; official C3 template. |
-| 4 | **Per-PR Worker name + cleanup workflow** | CI deploys to `worker-pr-{N}.{subdomain}.workers.dev` instead of the shared `worker-staging`; new `pull_request.closed` workflow runs `wrangler delete --name worker-pr-{N} --force` | 0.5 day | Low | $0 (Workers Free supports unlimited Worker names) | Concurrent PRs stop stomping each other. Stable per-PR URLs reviewers can bookmark. Pattern proven in `MCPJam/inspector` ([workflow](https://github.com/MCPJam/inspector/blob/main/.github/workflows/pr-mcp-preview.yml)). |
-| 5 | **Sentry on Workers** via `@sentry/cloudflare` | One `Sentry.withSentry()` wrapper in `worker/src/index.js`; SENTRY_DSN as a secret | 0.5 day | Low | $0 (Developer tier: 5K errors/mo, well above any plausible load for this project) | Actual visibility into prod errors — Workers Observability at 10% sampling routinely misses tail-latency / low-volume issues. Closes the "find out when it bites you" gap. |
-| 6 | **Per-workspace strict ESLint config + consolidate to root flat config** | Single `eslint.config.js` at root; per-workspace overrides via flat config's `files:` field; add `eslint-plugin-jsdoc` (enforces JSDoc on exports until TS migration completes) | 1 day | Low | $0 | Stops the worker/admin configs from drifting. Surfaces JSDoc gaps in the file inventory above (`routesLinks.js`, `analytics.js`). |
-| 7 | **Drizzle ORM** | TS schema in `worker/src/db/schema.ts`; replace `dbGet`/`dbAll`/`dbRun`/`dbBatch` with Drizzle queries; `drizzle-kit generate` produces SQL; `wrangler d1 migrations apply` (or your existing `migrate.mjs`) applies them | 5-8 days | Medium (D1 has no real transactions — must use `db.batch()`; `drizzle-kit migrate` uses `BEGIN TRANSACTION` which D1 rejects, so apply must go through wrangler) | $0 (7.4 KB gzipped) | Eliminates the column-list-repetition pain in `routesLinks.js`; makes `analytics.js`'s 24-statement matrix readable; type-safe schema evolution. **Real argument:** the next person adding a `links` column won't have to hunt 4 callsites. **Real counter-argument:** ~10 tables is the low end where raw SQL is still defensible. **My take:** do this after TS but before adding meaningful new tables. |
-| 8 | **React Hook Form + Zod for `admin/`** | `CreateLinkForm.jsx` + `EditLinkModal.jsx` (945 LOC combined) → ~500 LOC. Validation shifts from imperative `validateField()` to declarative Zod schemas. Schemas also exported from `@mack-link/shared` once TS lands. | 2 days | Low | $0 | Cuts the two largest admin files roughly in half. Shared Zod schemas server-validate the same input the form validates (single source of truth). |
-| 9 | **Bundle-size budget on `admin/dist/`** | Re-introduce the check that Sprint 1 deleted, but at the admin level (post-Static-Assets, worker bundle is tiny and not the right target). Enforce per-chunk ≤300 KB, total ≤900 KB | 0.5 day | Low | $0 | Sprint 1 dropped the budget reasonably — the worker check was obsolete — but the admin SPA still ships ~700 KB. The risk is regression by accident (adding a chart library, etc.). |
-| 10 | **Radix UI for `Dialog` / `Popover` / `Tabs` only** | Replace `useModalA11y.js` consumers (`CreateLinkForm`, `EditLinkModal`, `ConfirmationModal`, `MobileFiltersSheet`) with `@radix-ui/react-dialog`; mobile kebab menu uses `@radix-ui/react-popover`; tab switching uses `@radix-ui/react-tabs` | 2 days | Low-medium | $0 (~25 KB added, but `useModalA11y` deletes) | Stops re-implementing focus trap / Esc / scroll-lock semantics. Battle-tested a11y. Note: `useModalA11y.js` is actually well-written — this is a maintenance argument, not a correctness one. |
-| 11 | **`docs/API.md` + `README.md` post-Access cleanup (Sprint 2b's B4d carry-over)** | Replace "GitHub OAuth Flow" / "JWT with HttpOnly cookies" wording with "Cloudflare Access" + pointer to `SECURITY.md` | 1 hour | Low | $0 | Stops misleading new contributors. |
-| 12 | **Delete `admin/src/App.css` (unused) + dead `.react-datepicker*` CSS (~250 LOC) in `index.css`** | grep-verifiable; no react-datepicker dependency | 30 min | Low | $0 | Trivial, but ~290 LOC of dead CSS shouldn't ship in the SPA bundle. |
-| 13 | **PR + issue templates in `.github/`** | `.github/PULL_REQUEST_TEMPLATE.md`, `.github/ISSUE_TEMPLATE/{bug,feature}.md` | 1 hour | Low | $0 | Cosmetic, but the project ships PRs the size of #37 (65 items) — a template would have surfaced the deferred items earlier. |
-| 14 | **Hono RPC client (`hc<typeof app>`) in `admin/`** | Drop hand-maintained `admin/src/services/api.js`; replace with typed RPC client generated from worker route types | 1-2 days | Low (after #1 + #3 land) | $0 | End-to-end type safety; `packages/shared` shrinks to just helpers. |
-| 15 | **Workers Tracing destinations (Honeycomb / Baselime free tier)** | Add `observability.traces.destinations` in `wrangler.jsonc` | 1 hour | Low | $0 on Baselime/Axiom/Grafana Cloud free; **paid on Cloudflare side as of 2026-03-01** if you exceed the 10M events/mo Workers Paid included quota (you won't on this project) | Real distributed traces beyond `console.log` — pairs well with #5 (Sentry). |
+| 4 | **Sentry on Workers** via `@sentry/cloudflare` | One `Sentry.withSentry()` wrapper in `worker/src/index.js`; SENTRY_DSN as a secret | 0.5 day | Low | $0 (Developer tier: 5K errors/mo, well above any plausible load for this project) | Actual visibility into prod errors — Workers Observability at 10% sampling routinely misses tail-latency / low-volume issues. Without PR previews this becomes more important, not less: prod is now the first place a regression manifests in front of you. |
+| 5 | **Per-workspace strict ESLint config + consolidate to root flat config** | Single `eslint.config.js` at root; per-workspace overrides via flat config's `files:` field; add `eslint-plugin-jsdoc` (enforces JSDoc on exports until TS migration completes) | 1 day | Low | $0 | Stops the worker/admin configs from drifting. Surfaces JSDoc gaps in the file inventory above (`routesLinks.js`, `analytics.js`). |
+| 6 | **Drizzle ORM** | TS schema in `worker/src/db/schema.ts`; replace `dbGet`/`dbAll`/`dbRun`/`dbBatch` with Drizzle queries; `drizzle-kit generate` produces SQL; `wrangler d1 migrations apply` (or your existing `migrate.mjs`) applies them | 5-8 days | Medium (D1 has no real transactions — must use `db.batch()`; `drizzle-kit migrate` uses `BEGIN TRANSACTION` which D1 rejects, so apply must go through wrangler) | $0 (7.4 KB gzipped) | Eliminates the column-list-repetition pain in `routesLinks.js`; makes `analytics.js`'s 24-statement matrix readable; type-safe schema evolution. **Real argument:** the next person adding a `links` column won't have to hunt 4 callsites. **Real counter-argument:** ~10 tables is the low end where raw SQL is still defensible. **My take:** do this after TS but before adding meaningful new tables. |
+| 7 | **React Hook Form + Zod for `admin/`** | `CreateLinkForm.jsx` + `EditLinkModal.jsx` (945 LOC combined) → ~500 LOC. Validation shifts from imperative `validateField()` to declarative Zod schemas. Schemas also exported from `@mack-link/shared` once TS lands. | 2 days | Low | $0 | Cuts the two largest admin files roughly in half. Shared Zod schemas server-validate the same input the form validates (single source of truth). |
+| 8 | **Bundle-size budget on `admin/dist/`** | Re-introduce the check that Sprint 1 deleted, but at the admin level (post-Static-Assets, worker bundle is tiny and not the right target). Enforce per-chunk ≤300 KB, total ≤900 KB | 0.5 day | Low | $0 | Sprint 1 dropped the budget reasonably — the worker check was obsolete — but the admin SPA still ships ~700 KB. The risk is regression by accident (adding a chart library, etc.). |
+| 9 | **Radix UI for `Dialog` / `Popover` / `Tabs` only** | Replace `useModalA11y.js` consumers (`CreateLinkForm`, `EditLinkModal`, `ConfirmationModal`, `MobileFiltersSheet`) with `@radix-ui/react-dialog`; mobile kebab menu uses `@radix-ui/react-popover`; tab switching uses `@radix-ui/react-tabs` | 2 days | Low-medium | $0 (~25 KB added, but `useModalA11y` deletes) | Stops re-implementing focus trap / Esc / scroll-lock semantics. Battle-tested a11y. Note: `useModalA11y.js` is actually well-written — this is a maintenance argument, not a correctness one. |
+| 10 | **`docs/API.md` + `README.md` post-Access cleanup (Sprint 2b's B4d carry-over)** | Replace "GitHub OAuth Flow" / "JWT with HttpOnly cookies" wording with "Cloudflare Access" + pointer to `SECURITY.md` | 1 hour | Low | $0 | Stops misleading new contributors. |
+| 11 | **Delete `admin/src/App.css` (unused) + dead `.react-datepicker*` CSS (~250 LOC) in `index.css`** | grep-verifiable; no react-datepicker dependency | 30 min | Low | $0 | Trivial, but ~290 LOC of dead CSS shouldn't ship in the SPA bundle. |
+| 12 | **Hono RPC client (`hc<typeof app>`) in `admin/`** | Drop hand-maintained `admin/src/services/api.js`; replace with typed RPC client generated from worker route types | 1-2 days | Low (after #1 + #3 land) | $0 | End-to-end type safety; `packages/shared` shrinks to just helpers. |
+| 13 | **Workers Tracing destinations (Honeycomb / Baselime free tier)** | Add `observability.traces.destinations` in `wrangler.jsonc` | 1 hour | Low | $0 on Baselime/Axiom/Grafana Cloud free; **paid on Cloudflare side as of 2026-03-01** if you exceed the 10M events/mo Workers Paid included quota (you won't on this project) | Real distributed traces beyond `console.log` — pairs well with #4 (Sentry). |
 
 ### Ranked LOW (rejected with reason)
 
 | Item | Why rejected |
 |---|---|
 | **Replace `worker/scripts/migrate.mjs` with `wrangler d1 migrations`** | The custom runner exists for legitimate reasons: programmatic `PRAGMA table_info()` gating (002, 003, 005), env-var-driven backfills (003), the `006_owner_id_email.sql` rename (entirely JS, no SQL counterpart). Wrangler's builtin can't do any of these. Migrating means writing a "thin wrapper" around wrangler that re-implements the same checks — same complexity, less control, no payoff. **Disagree with prior thread.** |
-| **Per-PR D1 databases** | Free plan caps at 10 D1 databases per account. With cleanup-failure orphans this overflows fast. Real cost on Paid is fine, but the project's hard constraint is $0/mo. Shared staging D1 + per-PR Worker name (item #4) is the right balance. Defer until you regularly have 5+ open PRs. |
+| **Per-PR Worker previews of any flavour** | Retired per the workflow decision noted at the top of this document. Was originally rank #4 in §3; deleting from CI in the same change-set as this analysis update. |
+| **Per-PR D1 databases** | Same retirement as per-PR Worker previews. Even before the workflow decision, the Free-plan cap of 10 D1 databases per account made this risky for any meaningful PR volume. |
 | **Flag-day TypeScript migration** | Heavy existing JSDoc means incremental is strictly cheaper. No upside to forcing a single big-bang PR. |
 | **Prisma on D1** | 216× the Drizzle bundle (~600 KB gzipped Prisma engine vs 7.4 KB Drizzle), 4× slower cold start, D1 adapter still in Preview. Footgun on Workers. |
 | **Tailwind v3 → v4 migration** | **Already done.** `admin/package.json` is on `tailwindcss@4.1.12` + `@tailwindcss/vite@4.1.12`. The prior thread's list had this; it's stale. |
@@ -166,7 +175,7 @@ vitest integration tests + per-PR Worker previews.**
 | **Drizzle** | ⚠️ Hold-with-caveat | Right call, **but sequence after TS** (the type inference is the whole point) and **don't trust `drizzle-kit migrate`** — D1 rejects its `BEGIN TRANSACTION`. Generate SQL with `drizzle-kit generate`, apply via your existing `migrate.mjs` (or `wrangler d1 migrations apply`). At 10 tables the win is marginal; at 15+ it's real. Schedule it for after #1+#3, before any new analytics table. |
 | **`wrangler d1 migrations`** | ❌ **Reject** | **Disagree.** Your custom runner does things wrangler can't (programmatic ALTERs, env-var-driven backfills, the 006 rename). Migrating to wrangler means re-implementing those in a wrapper — same complexity, less control. **Keep `migrate.mjs`.** Optionally rename its tracking table from `migrations` to `d1_migrations` so a future hybrid setup is easier, but that's cosmetic. |
 | **vitest integration tests** | ⚠️ Hold-with-caveat | You **already have these** (14 test files including `redirect.test.js`, `links-multitenancy.test.js`, `cron.test.js`, `access.test.js`). The action item is **upgrade `@cloudflare/vitest-pool-workers` to 0.16.x via codemod** (item #2 above), not "add integration tests." |
-| **Per-PR Worker previews** | ✅ Hold (current setup is shared staging, not per-PR) | Right call. Move from `--name worker-staging` to `--name worker-pr-{N}`. Keep the shared staging D1 (per-PR D1 hits Free-plan quota of 10 dbs). Add `pull_request.closed` cleanup. Pattern: [MCPJam/inspector workflow](https://github.com/MCPJam/inspector/blob/main/.github/workflows/pr-mcp-preview.yml). |
+| **Per-PR Worker previews** | ❌ **Retired by user decision** (see workflow note at top). Originally I'd have held this — move from `worker-staging` to `worker-pr-{N}` with cleanup. The user instead chose to drop PRs as a personal-merge mechanism entirely; preview pipeline is removed from CI. The Bug 1 + Bug 2 findings in §9 of this doc were the verification that surfaced just how broken the existing pipeline was, which informed that decision. |
 
 ---
 
@@ -190,15 +199,15 @@ In rough priority order.
    reliably misses low-volume issues — which is exactly the failure mode
    you want to know about.
 
-3. **The single shared staging slot has been silently degrading the
-   review experience.** Two open PRs racing to deploy means one of them
-   sees the other's code. The fix is one CI yaml line (`--name
-   worker-pr-${{ github.event.pull_request.number }}` instead of the
-   implicit `worker-staging`) plus a `pull_request.closed` cleanup job
-   — but the issue isn't visible from CI status, only from clicking the
-   preview URL after a second PR opens. **The prior thread couldn't
-   catch this because they never clicked a preview URL.** (This thread
-   is doing exactly that in the bootstrap section below.)
+3. **The single shared staging slot has been silently failing for the
+   entire life of the preview pipeline** (since Sprint 1 / PR #38). The
+   bootstrap action below uncovered two distinct CI bugs that meant
+   `wrangler deploy --env staging` was never actually executed by CI;
+   the staging Worker has only ever held whatever was last deployed
+   from a developer's local machine. This finding directly informed
+   the user's decision to retire the preview pipeline entirely (see
+   workflow note at top). **The prior thread couldn't catch this because
+   they never clicked a preview URL.** (See §9 for the gory details.)
 
 4. **`docs/API.md` and `README.md` still describe pre-Sprint-2a auth.**
    README says "GitHub OAuth authentication" and lists "JWT with HttpOnly
@@ -302,20 +311,19 @@ Independent. Can land before everything else.
 
 **Out of scope this sprint**: routes, analytics aggregations, admin SPA.
 
-### Sprint 4 — Test infra + CI ergonomics (3-4 days)
+### Sprint 4 — Test infra + observability + cleanup (3-4 days)
 
 Parallel with Sprint 3.
 
 - Apply Cloudflare codemod for `vitest-pool-workers` 0.12 → 0.16
 - Bump Vitest to 4.1
-- Per-PR Worker name in CI (`--name worker-pr-${{ pr.number }}`)
-- Cleanup workflow on `pull_request.closed`
 - Update README's "validate:local 15 tests" → correct count
 - README + `docs/API.md` post-Access cleanup (Sprint 2b B4d carry-over)
+- `.github/CI.md` cleanup (the file still describes the pre-Sprint-1 embedded-admin world)
 - Delete `admin/src/App.css`
 - Delete dead `.react-datepicker*` CSS in `admin/src/index.css`
 - Delete or relocate root `image.jpg`
-- Add Sentry on Workers (`@sentry/cloudflare`)
+- Add Sentry on Workers (`@sentry/cloudflare`) — extra-important now that previews don't exist; prod is the first place regressions manifest
 
 ### Sprint 5 — Hono migration (3-5 days)
 
@@ -477,7 +485,15 @@ Each materially changes the recommendations.
 
 ---
 
-## 9. Bootstrap-action findings — end-to-end preview-deploy verification
+## 9. Bootstrap-action findings — end-to-end preview-deploy verification (HISTORICAL)
+
+> This section is preserved as the postmortem that led to the user's
+> decision to retire the PR preview pipeline entirely. The bugs
+> described below are now moot — the `preview` job has been deleted
+> from `.github/workflows/ci.yml` in the same change-set as this
+> doc update. Bug 1's fix (the regex anchoring) is also gone with
+> the job. Read this section as "what we found when we tried to verify
+> the pipeline worked," not as "things you still need to do."
 
 The originating brief required actually clicking + curling the preview URL
 that this PR's CI deploys, on the theory that "the agent that wrote the
@@ -554,23 +570,19 @@ discipline in this repo's `AGENTS.md`.
 Per the brief's "if a fix requires more than ~30 LOC, STOP and report"
 rule, **left as-is**. The PR stays open for the user.
 
-### Consequences for the prior thread's recommendation list
+### Consequences for the recommendation list
 
-This finding **strengthens** recommendation #4 (per-PR Worker name +
-cleanup workflow). Beyond the concurrent-PR-collision argument in §3,
-there's now a verified data point that the current single-shared-staging
-setup was never actually exercised by CI. Any per-PR redesign should:
+These findings informed the user's decision to **retire the preview
+pipeline entirely** rather than fix it. The reasoning, in their words,
+was that PR-based merges weren't earning their keep for a personal
+project — "merge locally after testing stuff locally" is simpler than
+either fixing Bug 2 or redesigning around per-PR Worker names.
 
-1. Fix the API-token permissions issue first (user action).
-2. Verify end-to-end (curl the URL) before declaring the pipeline green.
-3. Add a curl-based smoke check that fails CI on a non-2xx response,
-   so a future regression of either bug shows up in CI status, not
-   only on a human's screen. The existing `Smoke test staging` step
-   does `curl -fsS -o /dev/null` which fails on non-2xx — but it only
-   runs **after** the deploy step, and we never got that far. Move
-   the smoke step to its own job that runs on a schedule against the
-   live preview URL, not just inline in the deploy job, so accidental
-   skips don't hide a broken staging.
+So the original recommendation #4 (per-PR Worker name + cleanup
+workflow) has been **retired** rather than upgraded. Its absence makes
+recommendation #4 (Sentry on Workers, originally #5) more important,
+not less — prod is now the first place a regression manifests in front
+of a human.
 
 ### What was verified end-to-end vs not
 
@@ -588,18 +600,25 @@ setup was never actually exercised by CI. Any per-PR redesign should:
 | `GET https://worker-staging.spyicydev.workers.dev/admin` 200 + `<div id="root">` | 🚫 Not testable |
 | `GET https://worker-staging.spyicydev.workers.dev/api/links` 200 JSON | 🚫 Not testable |
 
-### Action items for the user (outside this PR's scope)
+### Action items for the user (after the workflow retirement)
 
-1. **Verify the `staging` GitHub Actions environment's
-   `CLOUDFLARE_API_TOKEN`** has `D1:Edit` on the account that owns
-   `mack-link-staging` (database_id `ca9836da-1d7d-4c79-99cd-5c2734327b64`).
-   Likely fix: create a new token in the Cloudflare dashboard with that
-   permission and update the env secret.
-2. After updating: push an empty commit to this branch or any PR to
-   re-trigger CI; the deploy should complete and post a preview URL
-   comment for the first time ever.
-3. **Once that's working**: curl-verify the four endpoints in the table
-   above; then close this PR (or merge — the doc may stand on its own).
+The original action list was about getting the preview pipeline working.
+Since the user retired it instead, the residual items are housekeeping:
+
+1. **(Optional) Delete the `staging` GitHub Actions Environment** in
+   repo Settings → Environments. Nothing references it anymore.
+2. **(Optional) Delete the `CF_WORKERS_SUBDOMAIN` repo secret** in
+   repo Settings → Secrets and variables → Actions. Nothing references
+   it anymore.
+3. **(Optional) Delete the staging Worker + D1** if you decide you
+   never want to `wrangler dev --env staging` either:
+   ```bash
+   wrangler delete --name worker-staging --force
+   wrangler d1 delete mack-link-staging --force
+   ```
+   Then also delete the `env.staging` block from `worker/wrangler.jsonc`.
+   The change-set keeping this analysis on `chore/modernization-analysis`
+   leaves all three in place by default — the cost is zero.
 
 ---
 

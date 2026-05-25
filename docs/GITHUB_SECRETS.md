@@ -9,11 +9,10 @@ Navigate to your repository → Settings → Secrets and variables → Actions �
 ### Required Secrets
 
 #### Production deploy
-- `CLOUDFLARE_API_TOKEN` - Cloudflare API token (needs Workers Scripts: Edit + D1: Edit on the account)
-- `CLOUDFLARE_ACCOUNT_ID` - Your Cloudflare account ID
+- `CLOUDFLARE_API_TOKEN` — Cloudflare API token (needs Workers Scripts: Edit + D1: Edit on the account)
+- `CLOUDFLARE_ACCOUNT_ID` — Your Cloudflare account ID
 
-#### Required for PR preview deploys (S3)
-- `CF_WORKERS_SUBDOMAIN` - Your account's workers.dev subdomain (the bit between the worker name and `.workers.dev`). Find via `wrangler whoami` or in the Cloudflare dashboard under Workers → "Your subdomain". Example: if your prod worker URL is `worker.example-acct.workers.dev`, set this to `example-acct`. The preview job uses it to build the staging URL: `https://worker-staging.<CF_WORKERS_SUBDOMAIN>.workers.dev`.
+That's the entire CI secret surface. CI runs `validate` on every push/PR and `deploy` on push to `main` — there is no staging / preview pipeline.
 
 ### Removed after Sprint 2a (Cloudflare Access migration)
 
@@ -28,26 +27,20 @@ The matching Worker secrets should also be deleted from production. See
 [SECURITY.md](../SECURITY.md) for the explicit `wrangler secret delete`
 commands.
 
-### Setting up PR preview deploys (S3)
+### Removed after preview-pipeline retirement
 
-Three one-time steps required before the first preview job runs:
+These were used only by the (now-removed) PR-preview deploy job and can
+be deleted from the repo's Actions secrets and the `staging` GitHub
+Environment:
 
-1. **Create the staging D1 database** (local machine):
-   ```bash
-   cd worker
-   npx wrangler d1 create mack-link-staging
-   ```
-   Copy the printed `database_id`.
+- `CF_WORKERS_SUBDOMAIN` — was used to build the per-PR staging URL.
 
-2. **Paste the database_id into `worker/wrangler.jsonc`**: find the `env.staging.d1_databases[0]` entry and replace `REPLACE_ME_AFTER_wrangler_d1_create` with the actual ID. Commit + push.
-
-3. **Add the `CF_WORKERS_SUBDOMAIN` secret** in repo Settings → Secrets and variables → Actions, as described above. While there, also replace the `<your-subdomain>` placeholders in `env.staging.vars.ALLOWED_ORIGINS` and `ALLOWED_REDIRECT_URIS` with the real subdomain (these are non-blocking for the deploy since staging runs in AUTH_DISABLED mode, but cleaner to fix when you do step 2).
-
-Until steps 1+2 are done, the preview job auto-detects the placeholder and skips with a `::warning::` instead of failing CI - PRs remain mergeable.
+The `staging` GitHub Environment itself can also be deleted (Settings →
+Environments → `staging`) if nothing else references it.
 
 ## Environment Configuration
 
-The CI/CD pipeline writes a `.env.local` (validate job) and `.env.production` (preview / deploy jobs) for the admin build:
+The CI pipeline writes a single `.env.local` (validate job) and a single `.env.production` (deploy job) for the admin build:
 
 ### Validate job
 ```

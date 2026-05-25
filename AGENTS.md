@@ -9,7 +9,7 @@ guidelines in detail.
 ```bash
 npm install
 npm run dev:ai          # zero-click dev mode (auth disabled)
-npm run validate:local  # all 15 direct-mode tests must pass with dev:ai running
+npm run validate:local  # all direct-mode tests must pass with dev:ai running
 npm run lint && npm test && npm run build
 ```
 
